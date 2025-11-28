@@ -53,6 +53,8 @@ compiler_project/
 ├── requirements.txt              # 项目依赖
 └── README.md                     # 本文件
 ```
+## 项目类图
+![alt text](compiler.drawio.svg)
 
 ## 快速开始
 
