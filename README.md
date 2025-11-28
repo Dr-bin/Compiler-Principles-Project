@@ -61,9 +61,6 @@ compiler_project/
 ```bash
 # 安装依赖
 pip install -r requirements.txt
-
-# 激活 conda base 环境（推荐）
-conda activate base
 ```
 
 ### 运行示例
