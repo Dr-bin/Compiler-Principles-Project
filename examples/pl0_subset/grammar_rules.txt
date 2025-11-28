@@ -1,0 +1,35 @@
+# PL/0子集语言的语法规则
+
+Program -> DeclList StmtList
+
+DeclList -> VarDecl | VarDecl DeclList | 
+
+VarDecl -> 'VAR' IDList 'SEMI'
+
+IDList -> 'ID' | 'ID' 'COMMA' IDList
+
+StmtList -> Stmt | Stmt StmtList
+
+Stmt -> AssignStmt | IfStmt | WhileStmt | ReadStmt | WriteStmt | Block
+
+AssignStmt -> 'ID' 'ASSIGN' Expr 'SEMI'
+
+IfStmt -> 'IF' '(' BoolExpr ')' Stmt | 'IF' '(' BoolExpr ')' Stmt 'ELSE' Stmt
+
+WhileStmt -> 'WHILE' '(' BoolExpr ')' Stmt
+
+ReadStmt -> 'READ' 'ID' 'SEMI'
+
+WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
+
+Block -> 'LBRACE' StmtList 'RBRACE'
+
+BoolExpr -> Expr RelOp Expr
+
+RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
+
+Expr -> Term | Term 'PLUS' Expr | Term 'MINUS' Expr
+
+Term -> Factor | Factor 'MUL' Term | Factor 'DIV' Term
+
+Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'
