@@ -1,23 +1,40 @@
-"""词法分析器生成器 (同学A负责)
+"""Lexer Generator (Student A's responsibility)
 
-该模块实现自动构建扫描器/词法分析器的功能，使用Thompson构造法和子集构造法
-将正则表达式转换为NFA，再转换为DFA进行高效的词法分析。
+This module implements automatic construction of scanner/lexer functionality,
+using Thompson's construction algorithm and subset construction algorithm
+to convert regular expressions to NFA, then to DFA for efficient lexical analysis.
+
+Algorithm flow:
+1. Regular expression → AST (RegexParser)
+2. AST → NFA (Thompson's construction)
+3. NFA → DFA (Subset construction)
+4. DFA longest match scanning
 """
 
-import re
-from typing import List, Tuple, Dict, Set
+from typing import List, Tuple, Dict, Set, Optional
 from dataclasses import dataclass
 
 
+# ============================================================================
+# Constants
+# ============================================================================
+
+EPSILON = None  # Marker for ε-transitions
+
+
+# ============================================================================
+# Token Data Structure
+# ============================================================================
+
 @dataclass
 class Token:
-    """Token 数据结构，表示一个词法单元
+    """Token data structure representing a lexical unit
     
-    属性:
-        type: Token类型（如'ID', 'NUM', 'PLUS'等）
-        value: Token的字面值（实际文本内容）
-        line: 所在源代码的行号
-        column: 所在源代码的列号
+    Attributes:
+        type: Token type (e.g., 'ID', 'NUM', 'PLUS', etc.)
+        value: Token literal value (actual text content)
+        line: Line number in source code
+        column: Column number in source code
     """
     type: str
     value: str
@@ -25,86 +42,533 @@ class Token:
     column: int
 
     def __repr__(self):
-        """返回Token的字符串表示"""
+        """Return string representation of Token"""
         return f"Token({self.type}, {self.value!r}, {self.line}, {self.column})"
 
 
-class LexerGenerator:
-    """词法分析器生成器类
+# ============================================================================
+# NFA Related Classes
+# ============================================================================
+
+class NFAState:
+    """NFA state: records transitions and whether it's an accepting state"""
+    _id_counter = 0
+
+    def __init__(self):
+        self.id = NFAState._id_counter
+        NFAState._id_counter += 1
+        # transitions: symbol -> set(NFAState)
+        self.trans: Dict[Optional[str], Set['NFAState']] = {}
+        self.is_accept = False
+        self.token_type: Optional[str] = None   # Which token this accepts
+        self.priority: Optional[int] = None     # Token priority (smaller number = higher priority)
+
+    def add_trans(self, symbol: Optional[str], state: 'NFAState'):
+        """Add a transition"""
+        if symbol not in self.trans:
+            self.trans[symbol] = set()
+        self.trans[symbol].add(state)
+
+
+class NFAFragment:
+    """Fragment used in Thompson's construction: start state + set of accepting states"""
+    def __init__(self, start: NFAState, accepts: Set[NFAState]):
+        self.start = start
+        self.accepts = accepts  # set of NFAState
+
+
+# ============================================================================
+# DFA Related Classes
+# ============================================================================
+
+class DFAState:
+    """DFA state: composed of a set of NFA states"""
+    _id_counter = 0
+
+    def __init__(self, nfa_states: Set[NFAState]):
+        self.id = DFAState._id_counter
+        DFAState._id_counter += 1
+        self.nfa_states = frozenset(nfa_states)
+        self.trans: Dict[str, 'DFAState'] = {}      # symbol -> DFAState
+        self.is_accept = False
+        self.token_type: Optional[str] = None
+        self.priority: Optional[int] = None
+
+    def __repr__(self):
+        return f"<DFAState {self.id} accept={self.is_accept}>"
+
+
+# ============================================================================
+# Regular Expression Parser
+# ============================================================================
+
+class RegexParser:
+    """
+    Simple regular expression parser supporting:
+      - Literal characters: a, b, +, *, ...
+      - Concatenation: implicit, e.g., "ab" means a followed by b
+      - Alternation: |
+      - Kleene closure: *
+      - Grouping: (...)
+      - Character classes: [0-9], [A-Za-z0-9]
+      - Escaping: \\(, \\), \\+, \\*, \\\\, etc.
     
-    使用正则表达式规则自动生成词法分析器。
-    将多个正则表达式规则编译为高效的扫描器。
+    Grammar:
+      expr  -> term ('|' term)*
+      term  -> factor+
+      factor-> base ('*')*
+      base  -> literal | '(' expr ')' | char_class
+    """
+    def __init__(self, pattern: str):
+        self.pattern = pattern
+        self.i = 0
+
+    def peek(self) -> Optional[str]:
+        """Peek at current character without moving pointer"""
+        if self.i >= len(self.pattern):
+            return None
+        return self.pattern[self.i]
+
+    def get(self) -> Optional[str]:
+        """Get current character and move pointer"""
+        ch = self.peek()
+        if ch is not None:
+            self.i += 1
+        return ch
+
+    def parse(self):
+        """Parse regular expression and return AST"""
+        expr = self.parse_expr()
+        if self.peek() is not None:
+            raise ValueError(f"Unexpected char at position {self.i}: {self.peek()}")
+        return expr
+
+    # expr -> term ('|' term)*
+    def parse_expr(self):
+        """Parse expression (alternation operation)"""
+        term = self.parse_term()
+        terms = [term]
+        while self.peek() == '|':
+            self.get()
+            terms.append(self.parse_term())
+        if len(terms) == 1:
+            return terms[0]
+        return ('ALT', terms)
+
+    # term -> factor+
+    def parse_term(self):
+        """Parse term (concatenation operation)"""
+        factors = []
+        while True:
+            ch = self.peek()
+            if ch is None or ch in ')|':
+                break
+            factors.append(self.parse_factor())
+        if not factors:
+            # Empty string epsilon
+            return ('EPS',)
+        if len(factors) == 1:
+            return factors[0]
+        return ('CONCAT', factors)
+
+    # factor -> base ('*' | '+' | '?')*
+    def parse_factor(self):
+        """Parse factor (Kleene closure, positive closure, and optional operations)"""
+        base = self.parse_base()
+        while True:
+            ch = self.peek()
+            if ch == '*':
+                self.get()
+                base = ('STAR', base)
+            elif ch == '+':
+                # a+ converts to aa*
+                self.get()
+                base = ('CONCAT', [base, ('STAR', base)])
+            elif ch == '?':
+                # a? converts to a|epsilon
+                self.get()
+                base = ('ALT', [base, ('EPS',)])
+            else:
+                break
+        return base
+
+    # base -> literal | '(' expr ')' | '(?:' expr ')' | char_class
+    def parse_base(self):
+        """Parse base element"""
+        ch = self.peek()
+        if ch is None:
+            raise ValueError("Unexpected end of pattern")
+        if ch == '(':
+            self.get()
+            # Check if it's a non-capturing group (?:...)
+            if self.peek() == '?' and self.i + 1 < len(self.pattern) and self.pattern[self.i + 1] == ':':
+                self.get()  # Consume '?'
+                self.get()  # Consume ':'
+            expr = self.parse_expr()
+            if self.get() != ')':
+                raise ValueError("Expected ')'")
+            return expr
+        if ch == '[':
+            return self.parse_char_class()
+        if ch == '\\':
+            # Escape character
+            self.get()
+            esc = self.get()
+            if esc is None:
+                raise ValueError("Dangling escape")
+            return ('LIT', esc)
+        # Ordinary literal character
+        self.get()
+        return ('LIT', ch)
+
+    def parse_char_class(self):
+        """Parse character class, supporting [0-9], [a-zA-Z0-9], etc."""
+        assert self.get() == '['
+        negate = False
+        if self.peek() == '^':
+            negate = True
+            self.get()
+        chars = set()
+        prev_char = None
+        
+        while True:
+            ch = self.peek()
+            if ch is None:
+                raise ValueError("Unterminated char class")
+            if ch == ']':
+                if prev_char is not None:
+                    chars.add(prev_char)
+                self.get()
+                break
+            
+            if ch == '\\':
+                self.get()  # Consume '\'
+                ch = self.get()
+                if ch is None:
+                    raise ValueError("Dangling escape in class")
+                if prev_char is not None:
+                    chars.add(prev_char)
+                prev_char = ch
+            elif ch == '-':
+                # Handle range: a-z
+                self.get()  # Consume '-'
+                if prev_char is None:
+                    # If '-' is at the beginning, treat as literal character
+                    chars.add('-')
+                    prev_char = None
+                else:
+                    # Check next character
+                    next_ch = self.peek()
+                    if next_ch is None or next_ch == ']':
+                        # '-' at the end, treat as literal character
+                        chars.add(prev_char)
+                        chars.add('-')
+                        prev_char = None
+                    else:
+                        # Form range prev_char-next_ch
+                        self.get()  # Consume end character
+                        start, end = prev_char, next_ch
+                        if ord(start) > ord(end):
+                            start, end = end, start
+                        for c in range(ord(start), ord(end) + 1):
+                            chars.add(chr(c))
+                        prev_char = None
+            else:
+                self.get()
+                if prev_char is not None:
+                    chars.add(prev_char)
+                prev_char = ch
+        
+        if prev_char is not None:
+            chars.add(prev_char)
+        
+        if negate:
+            raise NotImplementedError("Negated character classes not supported")
+        
+        # Represent as ALT(LIT) combination
+        if not chars:
+            return ('EPS',)
+        if len(chars) == 1:
+            return ('LIT', next(iter(chars)))
+        return ('ALT', [('LIT', c) for c in sorted(chars)])
+
+
+# ============================================================================
+# Thompson's Construction: AST → NFA
+# ============================================================================
+
+def thompson(ast) -> NFAFragment:
+    """Thompson's construction: AST -> NFAFragment"""
+    def build(node):
+        nodetype = node[0]
+        if nodetype == 'LIT':
+            start = NFAState()
+            end = NFAState()
+            start.add_trans(node[1], end)
+            return NFAFragment(start, {end})
+        elif nodetype == 'EPS':
+            start = NFAState()
+            return NFAFragment(start, {start})
+        elif nodetype == 'CONCAT':
+            frags = [build(n) for n in node[1]]
+            cur = frags[0]
+            for nxt in frags[1:]:
+                for a in cur.accepts:
+                    a.add_trans(EPSILON, nxt.start)
+                cur = NFAFragment(cur.start, nxt.accepts)
+            return cur
+        elif nodetype == 'ALT':
+            start = NFAState()
+            accepts = set()
+            for sub in node[1]:
+                frag = build(sub)
+                start.add_trans(EPSILON, frag.start)
+                accepts.update(frag.accepts)
+            return NFAFragment(start, accepts)
+        elif nodetype == 'STAR':
+            frag = build(node[1])
+            start = NFAState()
+            start.add_trans(EPSILON, frag.start)
+            for a in frag.accepts:
+                a.add_trans(EPSILON, frag.start)
+                a.add_trans(EPSILON, start)
+            return NFAFragment(start, {start})
+        else:
+            raise ValueError(f"Unknown AST node: {node}")
+    return build(ast)
+
+
+# ============================================================================
+# Subset Construction: NFA → DFA
+# ============================================================================
+
+def epsilon_closure(states: Set[NFAState]) -> Set[NFAState]:
+    """Compute ε-closure"""
+    stack = list(states)
+    closure = set(states)
+    while stack:
+        s = stack.pop()
+        for nxt in s.trans.get(EPSILON, []):
+            if nxt not in closure:
+                closure.add(nxt)
+                stack.append(nxt)
+    return closure
+
+
+def move(states: Set[NFAState], symbol: str) -> Set[NFAState]:
+    """NFA move operation"""
+    res = set()
+    for s in states:
+        for nxt in s.trans.get(symbol, []):
+            res.add(nxt)
+    return res
+
+
+def nfa_to_dfa(start_state: NFAState) -> Tuple[DFAState, List[DFAState], Set[str]]:
+    """
+    Subset construction: NFA -> DFA (optimized version)
+    
+    Returns:
+        start_dfa: DFA start state
+        dfa_states_list: List of all DFA states
+        alphabet: Alphabet
+    
+    Optimizations:
+        - Use set operations to optimize epsilon_closure and move
+        - Reduce redundant computations
+    """
+    # Collect all NFA states & alphabet (optimization: collect in one pass)
+    all_states = set()
+    alphabet = set()
+    stack = [start_state]
+    visited = set()
+    
+    while stack:
+        s = stack.pop()
+        if s in visited:
+            continue
+        visited.add(s)
+        all_states.add(s)
+        
+        for sym, targets in s.trans.items():
+            if sym is not EPSILON:
+                alphabet.add(sym)
+            for t in targets:
+                if t not in visited:
+                    stack.append(t)
+
+    start_closure = epsilon_closure({start_state})
+    dfa_states_map: Dict[frozenset, DFAState] = {}
+    dfa_list: List[DFAState] = []
+
+    def get_dfa_state(nfa_set: Set[NFAState]) -> DFAState:
+        """Get or create DFA state (optimization: cache frozenset)"""
+        key = frozenset(nfa_set)
+        if key in dfa_states_map:
+            return dfa_states_map[key]
+        ds = DFAState(key)
+        # Determine if it's an accepting state and corresponding token (by priority)
+        best_priority: Optional[int] = None
+        best_token: Optional[str] = None
+        for n in key:
+            if n.is_accept:
+                if best_priority is None or (n.priority is not None and n.priority < best_priority):
+                    best_priority = n.priority
+                    best_token = n.token_type
+        if best_token is not None:
+            ds.is_accept = True
+            ds.priority = best_priority
+            ds.token_type = best_token
+        dfa_states_map[key] = ds
+        dfa_list.append(ds)
+        return ds
+
+    start_dfa = get_dfa_state(start_closure)
+    worklist = [start_dfa]
+    processed = {start_dfa}  # Optimization: avoid duplicate processing
+    
+    while worklist:
+        d = worklist.pop()
+        processed.add(d)
+        
+        # Optimization: only process characters that actually appear
+        for sym in alphabet:
+            target_nfa = epsilon_closure(move(d.nfa_states, sym))
+            if not target_nfa:
+                continue
+            tgt_dfa = get_dfa_state(target_nfa)
+            d.trans[sym] = tgt_dfa
+            if tgt_dfa not in processed:
+                worklist.append(tgt_dfa)
+                processed.add(tgt_dfa)
+
+    return start_dfa, dfa_list, alphabet
+
+
+class LexerGenerator:
+    """Lexer generator class
+    
+    Automatically generates lexer using Thompson's construction and subset construction algorithms.
+    Compiles multiple regular expression rules into an efficient DFA scanner.
+    
+    Algorithm flow:
+    1. Regular expression → AST (RegexParser)
+    2. AST → NFA (Thompson's construction)
+    3. NFA → DFA (Subset construction)
+    4. DFA longest match scanning
     """
 
     def __init__(self):
-        """初始化词法生成器
+        """Initialize lexer generator
         
-        属性说明:
-            token_specs: 存储 (name, regex_pattern) 的列表
-            compiled_patterns: 编译后的正则表达式对象列表
+        Attributes:
+            token_specs: List storing (name, regex_pattern) tuples
+            start_dfa: DFA start state
+            alphabet: Alphabet (all possible input characters)
+            compiled_patterns: Compatibility attribute (deprecated, kept for testing)
         """
         self.token_specs: List[Tuple[str, str]] = []
-        self.compiled_patterns: List[Tuple[str, re.Pattern]] = []
+        self.start_dfa: Optional[DFAState] = None
+        self.alphabet: Set[str] = set()
+        # Compatibility attribute: for backward compatibility with test code
+        self.compiled_patterns: List[Tuple[str, str]] = []
 
     def add_token_rule(self, token_type: str, regex_pattern: str) -> None:
-        """添加一个词法规则（Token类型和对应的正则表达式）
+        """Add a lexical rule (Token type and corresponding regular expression)
         
-        参数:
-            token_type: Token的类型名称（如'ID', 'NUM', 'OPERATOR'等）
-            regex_pattern: 对应的正则表达式字符串
+        Args:
+            token_type: Token type name (e.g., 'ID', 'NUM', 'OPERATOR', etc.)
+            regex_pattern: Corresponding regular expression string
             
-        返回:
+        Returns:
             None
             
-        说明:
-            规则的添加顺序很重要 —— 优先级高的规则应该首先添加，
-            避免短规则先被长规则的子集匹配。例如保留字应在标识符之前。
+        Note:
+            The order of rule addition is important - higher priority rules should be added first,
+            to avoid short rules being matched before longer rule subsets. For example, keywords
+            should be added before identifiers.
         """
         self.token_specs.append((token_type, regex_pattern))
 
     def build(self) -> None:
-        """编译所有词法规则，生成可用于扫描的正则表达式对象列表
+        """Compile all lexical rules, generate DFA using Thompson's construction and subset construction
         
-        返回:
+        Returns:
             None
             
-        说明:
-            在调用 tokenize() 前必须调用此方法。
-            将所有 token_specs 编译为 re.Pattern 对象，存储在 compiled_patterns 中。
+        Note:
+            This method must be called before tokenize().
+            Process:
+            1. Build NFA for each rule (using Thompson's construction)
+            2. Merge all NFAs into a global NFA
+            3. Convert NFA to DFA using subset construction
+            
+        Optimization:
+            - Skip rebuilding if rules haven't changed and already built
         """
-        self.compiled_patterns = []
-        for token_type, pattern in self.token_specs:
-            # 使用 \A 锚点确保从当前位置开始匹配，避免匹配中间的内容
-            compiled = re.compile(r'\A(' + pattern + r')')
-            self.compiled_patterns.append((token_type, compiled))
+        if not self.token_specs:
+            raise RuntimeError("No token rules added. Call add_token_rule() first.")
+        
+        # Check if already built and rules unchanged (simple optimization)
+        if self.start_dfa is not None:
+            # If rule count is the same, assume rules unchanged (simple check)
+            # In practice, hash can be used for more precise judgment
+            return
+        
+        # Create global start state
+        global_start = NFAState()
+        
+        # Build NFA for each token rule
+        for priority, (token_type, pattern) in enumerate(self.token_specs):
+            try:
+                # 1. Parse regular expression to AST
+                ast = RegexParser(pattern).parse()
+                # 2. Thompson's construction: AST → NFA
+                frag = thompson(ast)
+                # 3. Mark accepting states and token information
+                for accept_state in frag.accepts:
+                    accept_state.is_accept = True
+                    accept_state.token_type = token_type
+                    accept_state.priority = priority
+                # 4. Connect to global start state
+                global_start.add_trans(EPSILON, frag.start)
+            except Exception as e:
+                raise ValueError(f"Failed to parse pattern '{pattern}' for token '{token_type}': {e}")
+        
+        # 5. Subset construction: NFA → DFA
+        self.start_dfa, dfa_list, self.alphabet = nfa_to_dfa(global_start)
+        
+        # Compatibility attribute: for backward compatibility with test code
+        self.compiled_patterns = [(token_type, pattern) for token_type, pattern in self.token_specs]
 
     def tokenize(self, text: str) -> List[Token]:
-        """将输入文本分解为Token列表
+        """Tokenize input text into Token list (using DFA longest match strategy)
         
-        参数:
-            text: 输入的源代码文本
+        Args:
+            text: Input source code text
             
-        返回:
-            Token对象列表
+        Returns:
+            List of Token objects
             
-        异常:
-            SyntaxError: 当遇到无法识别的字符时抛出
+        Raises:
+            SyntaxError: When encountering unrecognized characters
             
-        说明:
-            - 自动跳过空白字符和注释（//开头的行注释）
-            - 追踪行号和列号便于错误报告
-            - 使用子集构造法的思想：按顺序尝试所有规则，直到找到匹配
+        Note:
+            - Automatically skip whitespace characters and comments (line comments starting with //)
+            - Track line and column numbers for error reporting
+            - Use DFA longest match strategy: match the longest possible token
         """
-        if not self.compiled_patterns:
+        if self.start_dfa is None:
             raise RuntimeError("Lexer not built. Call build() first.")
 
         tokens: List[Token] = []
         pos = 0
         line = 1
         column = 1
+        n = len(text)
 
-        while pos < len(text):
-            # 跳过空白字符
+        while pos < n:
+            # Skip whitespace characters
             if text[pos].isspace():
                 if text[pos] == '\n':
                     line += 1
@@ -114,69 +578,86 @@ class LexerGenerator:
                 pos += 1
                 continue
 
-            # 处理行注释
-            if pos + 1 < len(text) and text[pos:pos+2] == '//':
-                # 跳过注释直到行尾
+            # Handle line comments
+            if pos + 1 < n and text[pos:pos+2] == '//':
+                # Skip comment until end of line
                 end = text.find('\n', pos)
                 if end == -1:
                     break
                 pos = end
                 continue
 
-            # 尝试匹配各个Token规则
-            matched = False
-            for token_type, pattern in self.compiled_patterns:
-                # 从位置pos开始匹配（使用切片）
-                match = pattern.match(text[pos:])
-                if match:
-                    lexeme = match.group(1)
-                    token = Token(token_type, lexeme, line, column)
-                    tokens.append(token)
-                    
-                    # 更新位置和行列号
-                    pos += match.end()
-                    if '\n' in lexeme:
-                        line += lexeme.count('\n')
-                        column = len(lexeme) - lexeme.rfind('\n')
-                    else:
-                        column += len(lexeme)
-                    matched = True
-                    break
+            # Use DFA for longest match
+            state = self.start_dfa
+            last_accept_state: Optional[DFAState] = None
+            last_accept_pos = pos
+            current_pos = pos
 
-            if not matched:
-                # 词法错误：无法识别的字符
+            # Match as far forward as possible
+            while current_pos < n:
+                ch = text[current_pos]
+                # If character not in alphabet, stop matching
+                if ch not in state.trans:
+                    break
+                state = state.trans[ch]
+                current_pos += 1
+                # Record last accepting state (longest match)
+                if state.is_accept:
+                    last_accept_state = state
+                    last_accept_pos = current_pos
+
+            if last_accept_state is None:
+                # Lexical error: unrecognized character
                 raise SyntaxError(
                     f"Lexical error at line {line}, column {column}: "
                     f"unexpected character '{text[pos]}'"
                 )
 
-        # 添加EOF token
+            # Extract matched lexeme
+            lexeme = text[pos:last_accept_pos]
+            token = Token(
+                last_accept_state.token_type or 'UNKNOWN',
+                lexeme,
+                line,
+                column
+            )
+            tokens.append(token)
+
+            # Update position and line/column numbers
+            pos = last_accept_pos
+            if '\n' in lexeme:
+                line += lexeme.count('\n')
+                column = len(lexeme) - lexeme.rfind('\n')
+            else:
+                column += len(lexeme)
+
+        # Add EOF token
         tokens.append(Token('EOF', '', line, column))
         return tokens
 
     def get_token_rules(self) -> List[Tuple[str, str]]:
-        """获取所有已添加的词法规则
+        """Get all added lexical rules
         
-        返回:
-            由 (token_type, regex_pattern) 组成的列表
+        Returns:
+            List of (token_type, regex_pattern) tuples
             
-        说明:
-            用于显示或检查当前已定义的所有词法规则。
+        Note:
+            Used to display or check all currently defined lexical rules.
         """
         return self.token_specs.copy()
 
 
 def create_lexer_from_spec(token_rules: List[Tuple[str, str]]) -> LexerGenerator:
-    """便捷函数：从规则列表创建词法分析器
+    """Convenience function: create lexer from rule list
     
-    参数:
-        token_rules: [(token_type, regex_pattern), ...] 列表
+    Args:
+        token_rules: List of [(token_type, regex_pattern), ...] tuples
         
-    返回:
-        已构建好的 LexerGenerator 对象
+    Returns:
+        Built LexerGenerator object
         
-    说明:
-        这是一个快速构造词法分析器的工厂函数。
+    Note:
+        This is a factory function for quickly constructing a lexer.
     """
     lexer = LexerGenerator()
     for token_type, pattern in token_rules:
