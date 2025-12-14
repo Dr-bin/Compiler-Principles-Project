@@ -52,12 +52,32 @@ python -m pytest tests/ --cov=src --cov-report=html
 ```
 
 ### 3. 编译示例代码
+
+**使用默认配置（推荐）**：
 ```bash
+# 使用默认规则文件和示例源代码
+python main.py build
+python main.py compile
+```
+
+**指定文件路径**：
+```bash
+# 指定规则文件
+python main.py build \
+  examples/simple_expr/lexer_rules.txt \
+  examples/simple_expr/grammar_rules.txt
+
+# 指定规则文件和源代码
 python main.py compile \
   examples/simple_expr/lexer_rules.txt \
   examples/simple_expr/grammar_rules.txt \
   examples/sample.src
 ```
+
+**默认文件路径**：
+- 词法规则：`examples/simple_expr/lexer_rules.txt`
+- 语法规则：`examples/simple_expr/grammar_rules.txt`
+- 源代码（compile命令）：`examples/sample.src`
 
 ## 📂 项目结构
 

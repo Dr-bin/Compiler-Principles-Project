@@ -24,6 +24,7 @@ class CompilerCLI:
         """初始化CLI"""
         self.logger = Logger()
         self.error_handler = ErrorHandler()
+        self.raw_args = None  # 保存原始命令行参数
 
     def run(self, args: list = None) -> int:
         """运行CLI程序
@@ -37,6 +38,12 @@ class CompilerCLI:
         说明:
             这是CLI的主入口点。
         """
+        # 保存原始参数用于判断是否使用了默认值
+        if args is None:
+            self.raw_args = sys.argv[1:]  # 跳过脚本名
+        else:
+            self.raw_args = args
+        
         parser = self._build_parser()
         parsed_args = parser.parse_args(args)
 
@@ -67,16 +74,26 @@ class CompilerCLI:
 
         # build 子命令：从规则文件生成编译器
         build_parser = subparsers.add_parser('build', help='从规则文件生成编译器')
-        build_parser.add_argument('lexer_rules', help='词法规则文件路径')
-        build_parser.add_argument('grammar_rules', help='语法规则文件路径')
+        build_parser.add_argument('lexer_rules', nargs='?', 
+                                 default='examples/simple_expr/lexer_rules.txt',
+                                 help='词法规则文件路径（默认：examples/simple_expr/lexer_rules.txt）')
+        build_parser.add_argument('grammar_rules', nargs='?',
+                                 default='examples/simple_expr/grammar_rules.txt',
+                                 help='语法规则文件路径（默认：examples/simple_expr/grammar_rules.txt）')
         build_parser.add_argument('-o', '--output', default='generated/compiler.py',
                                  help='输出文件路径（默认：generated/compiler.py）')
 
         # compile 子命令：使用生成的编译器编译源代码
         compile_parser = subparsers.add_parser('compile', help='编译源代码')
-        compile_parser.add_argument('lexer_rules', help='词法规则文件路径')
-        compile_parser.add_argument('grammar_rules', help='语法规则文件路径')
-        compile_parser.add_argument('source', help='要编译的源代码文件')
+        compile_parser.add_argument('lexer_rules', nargs='?',
+                                   default='examples/simple_expr/lexer_rules.txt',
+                                   help='词法规则文件路径（默认：examples/simple_expr/lexer_rules.txt）')
+        compile_parser.add_argument('grammar_rules', nargs='?',
+                                   default='examples/simple_expr/grammar_rules.txt',
+                                   help='语法规则文件路径（默认：examples/simple_expr/grammar_rules.txt）')
+        compile_parser.add_argument('source', nargs='?',
+                                   default='examples/sample.src',
+                                   help='要编译的源代码文件（默认：examples/sample.src）')
         compile_parser.add_argument('-o', '--output', help='输出文件路径（可选）')
 
         return parser
@@ -94,7 +111,16 @@ class CompilerCLI:
             从规则文件生成编译器代码。
         """
         try:
+            # 检查是否使用了默认路径（通过检查原始参数中是否提供了这些参数）
+            # 如果原始参数中只有 'build'，说明使用了默认值
+            using_default = (self.raw_args is not None and 
+                           len(self.raw_args) >= 1 and
+                           self.raw_args[0] == 'build' and
+                           len([a for a in self.raw_args[1:] if not a.startswith('-')]) == 0)
+            
             self.logger.info(f"读取规则文件...")
+            if using_default:
+                self.logger.info(f"  使用默认规则文件")
             self.logger.info(f"  词法规则: {args.lexer_rules}")
             self.logger.info(f"  语法规则: {args.grammar_rules}")
 
@@ -133,7 +159,18 @@ class CompilerCLI:
             使用生成的编译器编译源代码文件。
         """
         try:
+            # 检查是否使用了默认路径（通过检查原始参数中是否提供了这些参数）
+            # 如果原始参数中只有 'compile'，说明使用了默认值
+            using_default = (self.raw_args is not None and 
+                           len(self.raw_args) >= 1 and
+                           self.raw_args[0] == 'compile' and
+                           len([a for a in self.raw_args[1:] if not a.startswith('-')]) == 0)
+            
+            if using_default:
+                self.logger.info(f"使用默认配置编译...")
             self.logger.info(f"编译源文件: {args.source}")
+            self.logger.info(f"  词法规则: {args.lexer_rules}")
+            self.logger.info(f"  语法规则: {args.grammar_rules}")
 
             # 加载规则
             lexer_rules, grammar_rules = load_rules_from_files(
