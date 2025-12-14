@@ -7,9 +7,9 @@ import sys
 import os
 import argparse
 from src.frontend.rule_parser import load_rules_from_files
-from src.compiler_generator.lexer_generator import create_lexer_from_spec
-from src.compiler_generator.parser_generator import create_parser_from_spec
-from src.compiler_generator.code_generator import CodeGenerator
+from src.compiler_generator.lexer_generator import create_lexer_from_spec, generate_lexer_code
+from src.compiler_generator.parser_generator import create_parser_from_spec, generate_parser_code
+from src.compiler_generator.code_generator import CodeGenerator, generate_compiler_code
 from src.utils.logger import Logger
 from src.utils.error_handler import ErrorHandler
 
@@ -131,11 +131,30 @@ class CompilerCLI:
             self.logger.info(f"词法规则数量: {len(lexer_rules)}")
             self.logger.info(f"文法规则数量: {len(grammar_rules)}")
 
-            # 生成编译器代码（这里简化处理）
-            os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+            # 生成词法分析器代码
+            self.logger.info("生成词法分析器代码...")
+            lexer_code = generate_lexer_code(lexer_rules)
             
-            self.logger.info(f"生成编译器代码到: {args.output}")
+            # 生成语法分析器代码
+            self.logger.info("生成语法分析器代码...")
+            # grammar_rules已经是Dict[str, List[List[str]]]格式
+            # 提取开始符号（第一个非终结符）
+            start_symbol = list(grammar_rules.keys())[0] if grammar_rules else None
+            
+            parser_code = generate_parser_code(grammar_rules, start_symbol)
+            
+            # 生成完整编译器代码
+            self.logger.info("组合生成完整编译器...")
+            compiler_code = generate_compiler_code(lexer_code, parser_code)
+            
+            # 写入文件
+            os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)
+            with open(args.output, 'w', encoding='utf-8') as f:
+                f.write(compiler_code)
+            
+            self.logger.info(f"编译器已生成到: {args.output}")
             self.logger.success("编译器生成成功！")
+            self.logger.info(f"\n使用方法: python {args.output} <source_file> -o <output_file>")
 
             return 0
 

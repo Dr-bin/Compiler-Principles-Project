@@ -664,3 +664,100 @@ def create_lexer_from_spec(token_rules: List[Tuple[str, str]]) -> LexerGenerator
         lexer.add_token_rule(token_type, pattern)
     lexer.build()
     return lexer
+
+
+def generate_lexer_code(token_rules: List[Tuple[str, str]]) -> str:
+    """生成词法分析器的Python代码
+    
+    Args:
+        token_rules: 词法规则列表 [(token_type, regex_pattern), ...]
+        
+    Returns:
+        包含完整词法分析器的Python代码字符串
+    """
+    # 序列化token规则
+    token_rules_str = ""
+    for token_type, pattern in token_rules:
+        # 只转义单引号（因为使用r-string原始字符串，不需要转义反斜杠）
+        escaped_pattern = pattern.replace("'", "\\'")
+        token_rules_str += f"            ('{token_type}', r'{escaped_pattern}'),\n"
+    
+    lexer_code = f'''
+# =============================================================================
+# 自动生成的词法分析器
+# =============================================================================
+
+import re
+from dataclasses import dataclass
+from typing import List, Optional
+
+@dataclass
+class Token:
+    """Token数据结构"""
+    type: str
+    value: str
+    line: int
+    column: int
+    
+    def __repr__(self):
+        return f"Token({{self.type}}, {{self.value!r}}, {{self.line}}, {{self.column}})"
+
+class GeneratedLexer:
+    """自动生成的词法分析器"""
+    
+    def __init__(self):
+        self.token_specs = [
+{token_rules_str}        ]
+        self.compiled_patterns = [(name, re.compile(pattern)) for name, pattern in self.token_specs]
+    
+    def tokenize(self, text: str) -> List[Token]:
+        """词法分析"""
+        tokens = []
+        line = 1
+        column = 1
+        position = 0
+        
+        while position < len(text):
+            # 跳过空白符
+            if text[position].isspace():
+                if text[position] == '\\n':
+                    line += 1
+                    column = 1
+                else:
+                    column += 1
+                position += 1
+                continue
+            
+            # 跳过注释（//开头）
+            if position + 1 < len(text) and text[position:position+2] == '//':
+                while position < len(text) and text[position] != '\\n':
+                    position += 1
+                continue
+            
+            # 匹配token（最长匹配）
+            matched = False
+            max_len = 0
+            matched_type = None
+            matched_value = None
+            
+            for token_type, pattern in self.compiled_patterns:
+                match = pattern.match(text, position)
+                if match:
+                    match_len = match.end() - match.start()
+                    if match_len > max_len:
+                        max_len = match_len
+                        matched_type = token_type
+                        matched_value = match.group()
+                        matched = True
+            
+            if matched:
+                tokens.append(Token(matched_type, matched_value, line, column))
+                position += max_len
+                column += max_len
+            else:
+                raise SyntaxError(f"词法错误 行{{line}} 列{{column}}: 无法识别 '{{text[position]}}'")
+        
+        tokens.append(Token('EOF', '', line, column))
+        return tokens
+'''
+    return lexer_code

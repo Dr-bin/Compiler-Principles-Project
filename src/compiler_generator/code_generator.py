@@ -342,3 +342,188 @@ class CodeGenerator:
         self.temp_counter = 0
         self.label_counter = 0
         self.symbol_table = {}
+
+
+def generate_compiler_code(lexer_code: str, parser_code: str) -> str:
+    """生成完整的编译器代码
+    
+    参数:
+        lexer_code: 词法分析器代码字符串
+        parser_code: 语法分析器代码字符串
+        
+    返回:
+        完整的可执行编译器Python代码
+    """
+    from datetime import datetime
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    compiler_code = f'''#!/usr/bin/env python3
+# =============================================================================
+# 自动生成的编译器
+# 生成时间: {current_time}
+# =============================================================================
+
+import sys
+import argparse
+from typing import List, Optional
+
+{lexer_code}
+
+{parser_code}
+
+# =============================================================================
+# 代码生成器
+# =============================================================================
+
+class CodeGenerator:
+    """代码生成器 - 从AST生成三地址码"""
+    
+    def __init__(self):
+        self.code_list = []
+        self.temp_counter = 0
+    
+    def new_temp(self):
+        self.temp_counter += 1
+        return f"t{{self.temp_counter}}"
+    
+    def generate(self, ast):
+        """从AST生成三地址码"""
+        self._traverse(ast)
+        return self.code_list
+    
+    def _traverse(self, node):
+        if not node:
+            return None
+        
+        # 程序和语句列表
+        if node.name in ['Program', 'StmtList']:
+            for child in node.children:
+                self._traverse(child)
+            return None
+        
+        # 语句
+        elif node.name == 'Stmt':
+            # 赋值语句: ID = Expr ;
+            if len(node.children) >= 4 and node.children[0].name == "'ID'":
+                var_name = node.children[0].token.value
+                expr_value = self._traverse(node.children[2])
+                if var_name and expr_value:
+                    self.code_list.append(f"{{var_name}} = {{expr_value}}")
+            # print语句
+            elif len(node.children) >= 5 and node.children[0].name == "'PRINT'":
+                expr_value = self._traverse(node.children[2])
+                if expr_value:
+                    self.code_list.append(f"print({{expr_value}})")
+            return None
+        
+        # 表达式
+        elif node.name == 'Expr':
+            if len(node.children) == 1:
+                return self._traverse(node.children[0])
+            elif len(node.children) >= 2:
+                result = self._traverse(node.children[0])
+                for child in node.children[1:]:
+                    if child.name == 'AddOp':
+                        result = self._handle_addop(child, result)
+                return result
+        
+        # 项
+        elif node.name == 'Term':
+            if len(node.children) == 1:
+                return self._traverse(node.children[0])
+            elif len(node.children) >= 2:
+                result = self._traverse(node.children[0])
+                for child in node.children[1:]:
+                    if child.name == 'MulOp':
+                        result = self._handle_mulop(child, result)
+                return result
+        
+        # 因子
+        elif node.name == 'Factor':
+            if len(node.children) == 1:
+                return self._traverse(node.children[0])
+            elif len(node.children) >= 3:
+                return self._traverse(node.children[1])
+        
+        # 终结符
+        elif node.name in ['NUM', 'ID'] or (node.name.startswith("'") and node.name.endswith("'")):
+            if node.token:
+                return node.token.value
+        
+        return None
+    
+    def _handle_addop(self, node, left):
+        if len(node.children) >= 2:
+            op = node.children[0].token.value
+            right = self._traverse(node.children[1])
+            temp = self.new_temp()
+            self.code_list.append(f"{{temp}} = {{left}} {{op}} {{right}}")
+            if len(node.children) >= 3:
+                return self._handle_addop(node.children[2], temp)
+            return temp
+        return left
+    
+    def _handle_mulop(self, node, left):
+        if len(node.children) >= 2:
+            op = node.children[0].token.value
+            right = self._traverse(node.children[1])
+            temp = self.new_temp()
+            self.code_list.append(f"{{temp}} = {{left}} {{op}} {{right}}")
+            if len(node.children) >= 3:
+                return self._handle_mulop(node.children[2], temp)
+            return temp
+        return left
+
+# =============================================================================
+# 主程序
+# =============================================================================
+
+class GeneratedCompiler:
+    """生成的编译器主类"""
+    
+    def __init__(self):
+        self.lexer = GeneratedLexer()
+        self.parser = GeneratedParser()
+        self.codegen = CodeGenerator()
+    
+    def compile(self, source_code: str) -> List[str]:
+        """编译源代码"""
+        # 词法分析
+        tokens = self.lexer.tokenize(source_code)
+        
+        # 语法分析
+        ast = self.parser.parse(tokens)
+        
+        # 代码生成
+        code = self.codegen.generate(ast)
+        
+        return code
+    
+    def compile_file(self, input_file: str, output_file: str):
+        """编译文件"""
+        print(f"🔨 开始编译: {{input_file}}")
+        
+        with open(input_file, 'r', encoding='utf-8') as f:
+            source_code = f.read()
+        
+        code = self.compile(source_code)
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for line in code:
+                f.write(line + '\\n')
+        
+        print(f"✅ 编译完成: {{output_file}}")
+        print(f"📊 生成 {{len(code)}} 条三地址码")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="自动生成的编译器")
+    parser.add_argument("input", help="输入源代码文件路径")
+    parser.add_argument("-o", "--output", required=True, help="输出三地址码文件路径")
+    
+    args = parser.parse_args()
+    
+    compiler = GeneratedCompiler()
+    compiler.compile_file(args.input, args.output)
+'''
+    
+    return compiler_code

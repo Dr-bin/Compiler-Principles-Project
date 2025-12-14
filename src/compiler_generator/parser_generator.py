@@ -620,3 +620,115 @@ def create_parser_from_spec(grammar: Dict[str, List[List[str]]],
             parser.add_production(nonterminal, production)
     
     return parser
+
+
+def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str) -> str:
+    """生成语法分析器的Python代码
+    
+    参数:
+        grammar: 文法规则字典 {非终结符: [[产生式1], [产生式2], ...]}
+        start_symbol: 开始符号
+        
+    返回:
+        包含完整语法分析器的Python代码字符串
+    """
+    # 序列化文法
+    grammar_dict_str = "{\n"
+    for non_terminal, productions in grammar.items():
+        grammar_dict_str += f"            '{non_terminal}': [\n"
+        for production in productions:
+            # 使用repr()确保正确转义引号
+            prod_str = ", ".join([repr(sym) for sym in production])
+            grammar_dict_str += f"                [{prod_str}],\n"
+        grammar_dict_str += "            ],\n"
+    grammar_dict_str += "        }"
+    
+    parser_code = f'''
+# =============================================================================
+# 自动生成的语法分析器
+# =============================================================================
+
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+@dataclass
+class ASTNode:
+    """AST节点"""
+    name: str
+    children: List['ASTNode'] = field(default_factory=list)
+    token: Optional[object] = None
+    
+    def __repr__(self, indent=0):
+        prefix = "  " * indent
+        result = f"{{prefix}}{{self.name}}"
+        if self.token:
+            result += f" ('{{self.token.value}}')"
+        result += "\\n"
+        for child in self.children:
+            result += child.__repr__(indent + 1)
+        return result
+
+class GeneratedParser:
+    """自动生成的语法分析器"""
+    
+    def __init__(self):
+        self.tokens = []
+        self.pos = 0
+        self.grammar = {grammar_dict_str}
+        self.start_symbol = '{start_symbol}'
+    
+    def current_token(self):
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return self.tokens[-1]
+    
+    def advance(self):
+        if self.pos < len(self.tokens) - 1:
+            token = self.tokens[self.pos]
+            self.pos += 1
+            return token
+        return self.tokens[-1]
+    
+    def expect(self, token_type: str):
+        token = self.current_token()
+        if token.type == token_type:
+            return self.advance()
+        raise SyntaxError(f"期望 {{token_type}}，但得到 {{token.type}} 在 行{{token.line}} 列{{token.column}}")
+    
+    def parse_symbol(self, symbol: str):
+        # 终结符（带引号）
+        if symbol.startswith("'") and symbol.endswith("'"):
+            token_type = symbol[1:-1]
+            token = self.expect(token_type)
+            return ASTNode(name=symbol, token=token)
+        
+        # 非终结符
+        if symbol in self.grammar:
+            saved_pos = self.pos
+            for production in self.grammar[symbol]:
+                try:
+                    children = []
+                    for sym in production:
+                        child = self.parse_symbol(sym)
+                        children.append(child)
+                    return ASTNode(name=symbol, children=children)
+                except:
+                    self.pos = saved_pos
+            raise SyntaxError(f"无法解析 {{symbol}} 在位置 {{self.pos}}")
+        
+        # 直接匹配token类型
+        if self.current_token().type == symbol:
+            token = self.advance()
+            return ASTNode(name=symbol, token=token)
+        
+        raise SyntaxError(f"未知符号: {{symbol}}")
+    
+    def parse(self, tokens: List):
+        self.tokens = tokens
+        self.pos = 0
+        ast = self.parse_symbol(self.start_symbol)
+        if self.current_token().type != 'EOF':
+            raise SyntaxError(f"解析未完成，剩余token: {{self.current_token()}}")
+        return ast
+'''
+    return parser_code
