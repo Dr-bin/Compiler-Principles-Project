@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
 # 自动生成的编译器
-# 生成时间: 2025-12-16 23:43:13
+# 生成时间: 2025-12-17 00:41:58
 # =============================================================================
 
 import sys
@@ -328,10 +328,15 @@ class CodeGenerator:
     def __init__(self):
         self.code_list = []
         self.temp_counter = 0
+        self.label_counter = 0
     
     def new_temp(self):
         self.temp_counter += 1
         return f"t{self.temp_counter}"
+    
+    def new_label(self):
+        self.label_counter += 1
+        return f"L{self.label_counter}"
     
     def generate(self, ast):
         """从AST生成三地址码"""
@@ -348,49 +353,169 @@ class CodeGenerator:
                 self._traverse(child)
             return None
         
-        # 语句
+        # 语句：Stmt节点的子节点是具体的语句类型
         elif node.name == 'Stmt':
-            # 赋值语句: ID = Expr ;
+            # Stmt节点只有一个子节点，即具体的语句类型（如AssignStmt、IfStmt等）
+            if node.children:
+                return self._traverse(node.children[0])
+            return None
+        
+        # 赋值语句: ID = Expr ;
+        elif node.name == 'AssignStmt':
             if len(node.children) >= 4 and node.children[0].name == "'ID'":
                 var_name = node.children[0].token.value
                 expr_value = self._traverse(node.children[2])
                 if var_name and expr_value:
                     self.code_list.append(f"{var_name} = {expr_value}")
-            # print语句
-            elif len(node.children) >= 5 and node.children[0].name == "'PRINT'":
+            return None
+        
+        # print语句
+        elif node.name == 'PrintStmt':
+            if len(node.children) >= 5 and node.children[0].name == "'PRINT'":
                 expr_value = self._traverse(node.children[2])
                 if expr_value:
                     self.code_list.append(f"print({expr_value})")
             return None
         
-        # 表达式
+        # write语句: WRITE (Expr);
+        elif node.name == 'WriteStmt':
+            if len(node.children) >= 5 and node.children[0].name == "'WRITE'":
+                expr_value = self._traverse(node.children[2])
+                if expr_value:
+                    self.code_list.append(f"print({expr_value})")
+            return None
+        
+        # while语句: WHILE (BoolExpr) Stmt
+        elif node.name == 'WhileStmt':
+            if len(node.children) >= 5 and node.children[0].name == "'WHILE'":
+                # 生成循环标签
+                loop_label = self.new_label()
+                exit_label = self.new_label()
+                
+                # 循环开始标签
+                self.code_list.append(f"{loop_label}:")
+                
+                # 处理布尔表达式
+                bool_expr = node.children[2]
+                bool_result = self._traverse(bool_expr)
+                if bool_result:
+                    self.code_list.append(f"if not {bool_result} goto {exit_label}")
+                
+                # 处理循环体
+                body_stmt = node.children[4]
+                self._traverse(body_stmt)
+                
+                # 跳回循环开始
+                self.code_list.append(f"goto {loop_label}")
+                
+                # 循环结束标签
+                self.code_list.append(f"{exit_label}:")
+            return None
+        
+        # if语句: IF (BoolExpr) Stmt 或 IF (BoolExpr) Stmt ELSE Stmt
+        elif node.name == 'IfStmt':
+            if len(node.children) >= 5 and node.children[0].name == "'IF'":
+                else_label = self.new_label()
+                exit_label = self.new_label()
+                
+                # 处理布尔表达式
+                bool_expr = node.children[2]
+                bool_result = self._traverse(bool_expr)
+                if bool_result:
+                    self.code_list.append(f"if not {bool_result} goto {else_label}")
+                
+                # 处理if分支
+                then_stmt = node.children[4]
+                self._traverse(then_stmt)
+                
+                # 跳转到if结束
+                self.code_list.append(f"goto {exit_label}")
+                
+                # else分支开始标签
+                self.code_list.append(f"{else_label}:")
+                
+                # 处理else分支（如果有）
+                if len(node.children) >= 7 and node.children[5].name == "'ELSE'":
+                    else_stmt = node.children[6]
+                    self._traverse(else_stmt)
+                
+                # if结束标签
+                self.code_list.append(f"{exit_label}:")
+            return None
+        
+        # 块语句: { StmtList }
+        elif node.name == 'Block':
+            # 块包含一个语句列表，遍历处理
+            if len(node.children) >= 3:
+                stmt_list = node.children[1]
+                self._traverse(stmt_list)
+            return None
+        
+        # 布尔表达式
+        elif node.name == 'BoolExpr':
+            if len(node.children) >= 3:
+                expr1 = self._traverse(node.children[0])
+                relop = self._traverse(node.children[1])
+                expr2 = self._traverse(node.children[2])
+                if expr1 and relop and expr2:
+                    return f"{expr1} {relop} {expr2}"
+            return None
+        
+        # 关系操作符
+        elif node.name == 'RelOp':
+            if len(node.children) == 1:
+                return self._traverse(node.children[0])
+            return None
+        
+        # 表达式：根据语法规则，Expr -> Term | Term 'PLUS' Expr | Term 'MINUS' Expr
         elif node.name == 'Expr':
             if len(node.children) == 1:
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 2:
-                result = self._traverse(node.children[0])
-                for child in node.children[1:]:
-                    if child.name == 'AddOp':
-                        result = self._handle_addop(child, result)
-                return result
-        
-        # 项
-        elif node.name == 'Term':
-            if len(node.children) == 1:
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 2:
-                result = self._traverse(node.children[0])
-                for child in node.children[1:]:
-                    if child.name == 'MulOp':
-                        result = self._handle_mulop(child, result)
-                return result
-        
-        # 因子
-        elif node.name == 'Factor':
-            if len(node.children) == 1:
+                # Expr -> Term
                 return self._traverse(node.children[0])
             elif len(node.children) >= 3:
+                # Expr -> Term 'PLUS' Expr 或 Expr -> Term 'MINUS' Expr
+                left = self._traverse(node.children[0])
+                op = node.children[1].token.value if node.children[1].token else ''
+                right = self._traverse(node.children[2])
+                if left and op and right:
+                    temp = self.new_temp()
+                    self.code_list.append(f"{temp} = {left} {op} {right}")
+                    return temp
+            return None
+        
+        # 项：根据语法规则，Term -> Factor | Factor 'MUL' Term | Factor 'DIV' Term
+        elif node.name == 'Term':
+            if len(node.children) == 1:
+                # Term -> Factor
+                return self._traverse(node.children[0])
+            elif len(node.children) >= 3:
+                # Term -> Factor 'MUL' Term 或 Term -> Factor 'DIV' Term
+                left = self._traverse(node.children[0])
+                op = node.children[1].token.value if node.children[1].token else ''
+                right = self._traverse(node.children[2])
+                if left and op and right:
+                    temp = self.new_temp()
+                    self.code_list.append(f"{temp} = {left} {op} {right}")
+                    return temp
+            return None
+        
+        # 因子：根据语法规则，Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'
+        elif node.name == 'Factor':
+            if len(node.children) == 1:
+                # Factor -> 'NUM' 或 Factor -> 'ID'
+                return self._traverse(node.children[0])
+            elif len(node.children) >= 3:
+                # Factor -> 'LPAREN' Expr 'RPAREN'
                 return self._traverse(node.children[1])
+        
+        # 关系操作符的终端节点处理
+        elif node.name in ['PLUS', 'MINUS', 'MUL', 'DIV', 'EQ', 'NE', 'LT', 'LE', 'GT', 'GE']:
+            if node.token:
+                return node.token.value
+        
+        # 括号等特殊字符
+        elif node.name in ['LPAREN', 'RPAREN', 'LBRACE', 'RBRACE', 'SEMI', 'COMMA']:
+            return None
         
         # 终结符
         elif node.name in ['NUM', 'ID'] or (node.name.startswith("'") and node.name.endswith("'")):
