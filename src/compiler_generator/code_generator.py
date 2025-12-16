@@ -367,6 +367,14 @@ import sys
 import argparse
 from typing import List, Optional
 
+# =============================================================================
+# 编译错误异常类
+# =============================================================================
+
+class CompilationError(Exception):
+    """编译错误异常"""
+    pass
+
 {lexer_code}
 
 {parser_code}
@@ -489,31 +497,66 @@ class GeneratedCompiler:
     def compile(self, source_code: str) -> List[str]:
         """编译源代码"""
         # 词法分析
-        tokens = self.lexer.tokenize(source_code)
+        try:
+            tokens = self.lexer.tokenize(source_code)
+        except SyntaxError as e:
+            raise CompilationError(f"词法错误: {{str(e)}}")
+        except Exception as e:
+            raise CompilationError(f"词法分析失败: {{str(e)}}")
         
         # 语法分析
-        ast = self.parser.parse(tokens)
+        try:
+            ast = self.parser.parse(tokens)
+        except SyntaxError as e:
+            raise CompilationError(f"语法错误: {{str(e)}}")
+        except Exception as e:
+            raise CompilationError(f"语法分析失败: {{str(e)}}")
         
         # 代码生成
-        code = self.codegen.generate(ast)
+        try:
+            code = self.codegen.generate(ast)
+        except Exception as e:
+            raise CompilationError(f"代码生成失败: {{str(e)}}")
         
         return code
     
     def compile_file(self, input_file: str, output_file: str):
         """编译文件"""
-        print(f"🔨 开始编译: {{input_file}}")
+        print(f"[编译] 开始编译: {{input_file}}")
         
-        with open(input_file, 'r', encoding='utf-8') as f:
-            source_code = f.read()
+        try:
+            with open(input_file, 'r', encoding='utf-8') as f:
+                source_code = f.read()
+        except FileNotFoundError:
+            print(f"[错误] 文件不存在: {{input_file}}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"[错误] 读取文件失败: {{str(e)}}")
+            sys.exit(1)
         
-        code = self.compile(source_code)
+        try:
+            code = self.compile(source_code)
+        except CompilationError as e:
+            print(f"\\n{'='*70}")
+            print(f"[错误] 编译失败")
+            print(f"{'='*70}")
+            print(f"{{str(e)}}")
+            print(f"{'='*70}\\n")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\\n[错误] 编译过程出现异常: {{str(e)}}")
+            sys.exit(1)
         
-        with open(output_file, 'w', encoding='utf-8') as f:
-            for line in code:
-                f.write(line + '\\n')
+        try:
+            with open(output_file, 'w', encoding='utf-8') as f:
+                for line in code:
+                    f.write(line + '\\n')
+        except Exception as e:
+            print(f"[错误] 写入输出文件失败: {{str(e)}}")
+            sys.exit(1)
         
-        print(f"✅ 编译完成: {{output_file}}")
-        print(f"📊 生成 {{len(code)}} 条三地址码")
+        print(f"[成功] 编译完成: {{output_file}}")
+        print(f"[统计] 生成 {{len(code)}} 条三地址码")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="自动生成的编译器")

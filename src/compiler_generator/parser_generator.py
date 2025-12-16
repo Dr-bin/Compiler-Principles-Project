@@ -439,8 +439,10 @@ def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str)
     # 序列化文法
     grammar_dict_str = "{\n"
     for non_terminal, productions in grammar.items():
+        # 对产生式按长度降序排序，避免短匹配问题
+        sorted_productions = sorted(productions, key=lambda x: len(x), reverse=True)
         grammar_dict_str += f"            '{non_terminal}': [\n"
-        for production in productions:
+        for production in sorted_productions:
             # 使用repr()确保正确转义引号
             prod_str = ", ".join([repr(sym) for sym in production])
             grammar_dict_str += f"                [{prod_str}],\n"
@@ -497,7 +499,11 @@ class GeneratedParser:
         token = self.current_token()
         if token.type == token_type:
             return self.advance()
-        raise SyntaxError(f"期望 {{token_type}}，但得到 {{token.type}} 在 行{{token.line}} 列{{token.column}}")
+        raise SyntaxError(
+            f"语法错误: 第{{token.line}}行, 第{{token.column}}列\\n"
+            f"  期望: {{token_type}}\\n"
+            f"  实际: {{token.type}} (值: '{{token.value}}')"
+        )
     
     def parse_symbol(self, symbol: str):
         # 终结符（带引号）
@@ -516,9 +522,27 @@ class GeneratedParser:
                         child = self.parse_symbol(sym)
                         children.append(child)
                     return ASTNode(name=symbol, children=children)
-                except:
+                except SyntaxError:
                     self.pos = saved_pos
-            raise SyntaxError(f"无法解析 {{symbol}} 在位置 {{self.pos}}")
+                    continue
+                except Exception:
+                    self.pos = saved_pos
+                    raise
+            
+            # 所有产生式都失败，生成详细的错误信息
+            current = self.current_token()
+            expected_tokens = []
+            for prod in self.grammar[symbol]:
+                if prod and prod[0].startswith("'") and prod[0].endswith("'"):
+                    expected_tokens.append(prod[0][1:-1])
+            
+            expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "未知"
+            raise SyntaxError(
+                f"语法错误: 第{{current.line}}行, 第{{current.column}}列\\n"
+                f"  无法解析非终结符 '{{symbol}}'\\n"
+                f"  当前token: {{current.type}} (值: '{{current.value}}')\\n"
+                f"  期望的token类型: {{expected_str}}"
+            )
         
         # 直接匹配token类型
         if self.current_token().type == symbol:
@@ -530,9 +554,19 @@ class GeneratedParser:
     def parse(self, tokens: List):
         self.tokens = tokens
         self.pos = 0
-        ast = self.parse_symbol(self.start_symbol)
-        if self.current_token().type != 'EOF':
-            raise SyntaxError(f"解析未完成，剩余token: {{self.current_token()}}")
+        try:
+            ast = self.parse_symbol(self.start_symbol)
+        except SyntaxError as e:
+            # 重新抛出，保持错误信息
+            raise
+        
+        current = self.current_token()
+        if current.type != 'EOF':
+            raise SyntaxError(
+                f"语法错误: 第{{current.line}}行, 第{{current.column}}列\\n"
+                f"  解析未完成，仍有未处理的token\\n"
+                f"  剩余token: {{current.type}} (值: '{{current.value}}')"
+            )
         return ast
 '''
     return parser_code

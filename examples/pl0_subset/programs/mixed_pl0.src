@@ -1,0 +1,25 @@
+// 综合 PL/0 子集示例
+// 覆盖：var / 赋值 / 算术 / 关系 / if-else / while / read/write / 块
+
+var n, i, sum;
+
+// 假设 n 事先给定，这里直接赋值
+n = 5;
+sum = 0;
+i = 1;
+
+// while 循环累加 1..n
+while (i <= n)
+{
+    sum = sum + i;
+    i = i + 1;
+}
+
+// 如果 sum 大于 10，则输出 sum，否则输出 n
+if (sum > 10)
+    write(sum);
+else
+    write(n);
+
+
+

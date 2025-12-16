@@ -1,0 +1,25 @@
+// PL/0 子集示例：if / else / while / 关系运算
+
+var x, y, max, i;
+
+x = 3;
+y = 5;
+
+// if-else: 取较大值
+if (x < y) 
+    max = y;
+else 
+    max = x;
+
+write(max);
+
+// while: 从 0 累加到 4
+i = 0;
+while (i < 5)
+{
+    write(i);
+    i = i + 1;
+}
+
+
+

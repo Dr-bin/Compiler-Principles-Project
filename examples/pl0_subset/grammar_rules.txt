@@ -1,35 +1,52 @@
 # PL/0子集语言的语法规则
 
+# 程序结构：程序由声明列表和语句列表组成
 Program -> DeclList StmtList
 
+# 声明列表：可以是单个变量声明、变量声明后跟声明列表，或者为空
 DeclList -> VarDecl | VarDecl DeclList | 
 
+# 变量声明：以VAR关键字开头，后跟标识符列表和分号
 VarDecl -> 'VAR' IDList 'SEMI'
 
+# 标识符列表：可以是单个标识符，或者标识符后跟逗号和标识符列表
 IDList -> 'ID' | 'ID' 'COMMA' IDList
 
+# 语句列表：可以是单个语句，或者语句后跟语句列表
 StmtList -> Stmt | Stmt StmtList
 
+# 语句类型：支持赋值语句、if语句、while语句、read语句、write语句和块
 Stmt -> AssignStmt | IfStmt | WhileStmt | ReadStmt | WriteStmt | Block
 
+# 赋值语句：标识符 = 表达式;
 AssignStmt -> 'ID' 'ASSIGN' Expr 'SEMI'
 
-IfStmt -> 'IF' '(' BoolExpr ')' Stmt | 'IF' '(' BoolExpr ')' Stmt 'ELSE' Stmt
+# If语句：支持两种形式：if (条件) 语句 和 if (条件) 语句 else 语句
+IfStmt -> 'IF' 'LPAREN' BoolExpr 'RPAREN' Stmt | 'IF' 'LPAREN' BoolExpr 'RPAREN' Stmt 'ELSE' Stmt
 
-WhileStmt -> 'WHILE' '(' BoolExpr ')' Stmt
+# While语句：while (条件) 语句
+WhileStmt -> 'WHILE' 'LPAREN' BoolExpr 'RPAREN' Stmt
 
+# Read语句：从输入读取值到变量
 ReadStmt -> 'READ' 'ID' 'SEMI'
 
+# Write语句：输出表达式的值
 WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
 
+# 块：由大括号包围的语句列表
 Block -> 'LBRACE' StmtList 'RBRACE'
 
+# 布尔表达式：表达式 关系操作符 表达式
 BoolExpr -> Expr RelOp Expr
 
+# 关系操作符：小于、小于等于、大于、大于等于、等于、不等于
 RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
 
+# 表达式：由项通过加号或减号连接组成
 Expr -> Term | Term 'PLUS' Expr | Term 'MINUS' Expr
 
+# 项：由因子通过乘号或除号连接组成
 Term -> Factor | Factor 'MUL' Term | Factor 'DIV' Term
 
+# 因子：可以是数字、标识符或括号包围的表达式
 Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'

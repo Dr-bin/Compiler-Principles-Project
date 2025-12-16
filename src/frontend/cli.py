@@ -6,12 +6,15 @@
 import sys
 import os
 import argparse
+import re
+import subprocess
 from src.frontend.rule_parser import load_rules_from_files
 from src.compiler_generator.lexer_generator import create_lexer_from_spec, generate_lexer_code
-from src.compiler_generator.parser_generator import create_parser_from_spec, generate_parser_code
+from src.compiler_generator.parser_generator import create_parser_from_spec, generate_parser_code, ParseError
 from src.compiler_generator.code_generator import CodeGenerator, generate_compiler_code
 from src.utils.logger import Logger
 from src.utils.error_handler import ErrorHandler
+from src.utils.error_formatter import ErrorFormatter
 
 
 class CompilerCLI:
@@ -52,6 +55,8 @@ class CompilerCLI:
                 return self._cmd_build(parsed_args)
             elif parsed_args.command == 'compile':
                 return self._cmd_compile(parsed_args)
+            elif parsed_args.command == 'test-compiler':
+                return self._cmd_test_compiler(parsed_args)
             else:
                 parser.print_help()
                 return 1
@@ -95,6 +100,27 @@ class CompilerCLI:
                                    default='examples/sample.src',
                                    help='要编译的源代码文件（默认：examples/sample.src）')
         compile_parser.add_argument('-o', '--output', help='输出文件路径（可选）')
+
+        # test-compiler 子命令：构建并测试生成的编译器
+        test_parser = subparsers.add_parser(
+            'test-compiler',
+            help='构建并用内置示例程序测试生成的编译器'
+        )
+        test_parser.add_argument('lexer_rules', nargs='?',
+                                 default='examples/simple_expr/lexer_rules.txt',
+                                 help='词法规则文件路径（默认：examples/simple_expr/lexer_rules.txt）')
+        test_parser.add_argument('grammar_rules', nargs='?',
+                                 default='examples/simple_expr/grammar_rules.txt',
+                                 help='语法规则文件路径（默认：examples/simple_expr/grammar_rules.txt）')
+        test_parser.add_argument('-c', '--compiler-output',
+                                 default='generated/compiler.py',
+                                 help='生成的编译器路径（默认：generated/compiler.py）')
+        test_parser.add_argument('-p', '--program-dir',
+                                 default='examples/simple_expr/programs',
+                                 help='测试程序所在目录（默认：examples/simple_expr/programs）')
+        test_parser.add_argument('-o', '--output-dir',
+                                 default='generated/test_outputs',
+                                 help='测试输出目录（默认：generated/test_outputs）')
 
         return parser
 
@@ -205,16 +231,51 @@ class CompilerCLI:
 
             # 词法分析
             self.logger.info("执行词法分析...")
-            tokens = lexer.tokenize(source_code)
-            self.logger.info(f"词法分析完成，产生 {len(tokens)} 个token")
+            try:
+                tokens = lexer.tokenize(source_code)
+                self.logger.info(f"词法分析完成，产生 {len(tokens)} 个token")
+            except (SyntaxError, Exception) as e:
+                # 处理词法错误
+                formatter = ErrorFormatter(source_code=source_code, source_file=args.source)
+                # 从错误消息中提取行号和列号
+                error_msg = str(e)
+                line_match = re.search(r'line\s+(\d+)', error_msg, re.IGNORECASE)
+                col_match = re.search(r'column\s+(\d+)', error_msg, re.IGNORECASE)
+                line = int(line_match.group(1)) if line_match else 1
+                col = int(col_match.group(1)) if col_match else 1
+                formatted_error = formatter.format_lexical_error(error_msg, line, col)
+                try:
+                    print("\n" + formatted_error)
+                except UnicodeEncodeError:
+                    print(f"\n词法错误: {error_msg}")
+                return 1
 
             # 语法分析
             self.logger.info("执行语法分析...")
             # 需要从grammar_rules中确定起始符号
             start_symbol = list(grammar_rules.keys())[0] if grammar_rules else 'Program'
             parser = create_parser_from_spec(grammar_rules, start_symbol)
-            ast = parser.parse(tokens)
-            self.logger.info("语法分析完成，生成AST")
+            try:
+                ast = parser.parse(tokens)
+                self.logger.info("语法分析完成，生成AST")
+            except ParseError as e:
+                # 使用错误格式化器显示友好的错误信息
+                formatter = ErrorFormatter(source_code=source_code, source_file=args.source)
+                # 从错误消息中提取行号、列号和期望的token
+                error_info = self._parse_error_message(str(e))
+                formatted_error = formatter.format_syntax_error(
+                    error_info['message'],
+                    error_info['line'],
+                    error_info['column'],
+                    error_info.get('expected_tokens')
+                )
+                try:
+                    print("\n" + formatted_error)
+                except UnicodeEncodeError:
+                    # 如果编码失败，使用简化版本
+                    print(f"\n语法错误: {error_info['message']}")
+                    print(f"位置: 第 {error_info['line']} 行, 第 {error_info['column']} 列")
+                return 1
 
             # 代码生成
             self.logger.info("执行代码生成...")
@@ -236,9 +297,161 @@ class CompilerCLI:
         except FileNotFoundError as e:
             self.logger.error(f"文件不存在: {e}")
             return 1
-        except Exception as e:
-            self.logger.error(f"编译失败: {e}")
+        except ParseError as e:
+            # 语法错误已经在上面处理了，这里作为备用
+            try:
+                formatter = ErrorFormatter(source_file=args.source if 'args' in locals() else None)
+                error_info = self._parse_error_message(str(e))
+                formatted_error = formatter.format_syntax_error(
+                    error_info['message'],
+                    error_info['line'],
+                    error_info['column'],
+                    error_info.get('expected_tokens')
+                )
+                print("\n" + formatted_error)
+            except UnicodeEncodeError:
+                print(f"\n语法错误: {str(e)}")
             return 1
+        except Exception as e:
+            # 其他错误，使用通用格式化
+            try:
+                formatter = ErrorFormatter()
+                formatted_error = formatter.format_general_error(str(e), "编译错误")
+                print("\n" + formatted_error)
+            except UnicodeEncodeError:
+                print(f"\n编译错误: {str(e)}")
+            self.error_handler.handle_error(e)
+            return 1
+
+    def _cmd_test_compiler(self, args) -> int:
+        """处理 test-compiler 命令
+
+        步骤:
+        1. 调用 build 逻辑生成编译器（默认 generated/compiler.py）
+        2. 扫描程序目录中所有 .src 文件
+        3. 依次调用生成的编译器进行编译，输出到指定目录
+        """
+        try:
+            self.logger.info("开始构建生成的编译器用于测试...")
+
+            # 复用 _cmd_build 逻辑
+            from types import SimpleNamespace
+            build_args = SimpleNamespace(
+                lexer_rules=args.lexer_rules,
+                grammar_rules=args.grammar_rules,
+                output=args.compiler_output,
+            )
+            build_result = self._cmd_build(build_args)
+            if build_result != 0:
+                self.logger.error("构建生成的编译器失败，终止测试。")
+                return build_result
+
+            compiler_path = args.compiler_output
+            program_dir = args.program_dir
+            output_dir = args.output_dir
+
+            if not os.path.isdir(program_dir):
+                self.logger.error(f"测试程序目录不存在: {program_dir}")
+                return 1
+
+            os.makedirs(output_dir, exist_ok=True)
+
+            self.logger.info(f"使用生成的编译器测试目录中的程序: {program_dir}")
+
+            success_count = 0
+            fail_count = 0
+
+            for filename in sorted(os.listdir(program_dir)):
+                if not filename.endswith('.src'):
+                    continue
+
+                src_path = os.path.join(program_dir, filename)
+                out_path = os.path.join(
+                    output_dir,
+                    os.path.splitext(filename)[0] + '.tac'
+                )
+
+                self.logger.info(f"  测试程序: {src_path}")
+
+                cmd = [
+                    sys.executable,
+                    compiler_path,
+                    src_path,
+                    '-o',
+                    out_path,
+                ]
+
+                try:
+                    completed = subprocess.run(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        encoding='utf-8',
+                    )
+                except Exception as e:
+                    self.logger.error(f"  运行生成的编译器失败: {e}")
+                    fail_count += 1
+                    continue
+
+                if completed.returncode == 0:
+                    self.logger.success(f"  通过: {filename} -> {out_path}")
+                    success_count += 1
+                else:
+                    self.logger.error(f"  失败: {filename}")
+                    if completed.stdout:
+                        print("  --- stdout ---")
+                        print(completed.stdout)
+                    if completed.stderr:
+                        print("  --- stderr ---", file=sys.stderr)
+                        print(completed.stderr, file=sys.stderr)
+                    fail_count += 1
+
+            self.logger.info(
+                f"测试完成: 成功 {success_count} 个，失败 {fail_count} 个，"
+                f"共 {success_count + fail_count} 个程序。"
+            )
+
+            return 0 if fail_count == 0 else 1
+        except Exception as e:
+            self.logger.error(f"test-compiler 执行失败: {e}")
+            return 1
+    
+    def _parse_error_message(self, error_msg: str) -> dict:
+        """解析错误消息，提取行号、列号和期望的token
+        
+        参数:
+            error_msg: 错误消息字符串
+            
+        返回:
+            包含解析信息的字典
+        """
+        result = {
+            'message': error_msg,
+            'line': 1,
+            'column': 1,
+            'expected_tokens': None
+        }
+        
+        # 提取行号: "Line 2" 或 "at Line 2"
+        line_match = re.search(r'[Ll]ine\s+(\d+)', error_msg)
+        if line_match:
+            result['line'] = int(line_match.group(1))
+        
+        # 提取列号: "Column 8" 或 "列 8"
+        col_match = re.search(r'[Cc]olumn\s+(\d+)', error_msg)
+        if col_match:
+            result['column'] = int(col_match.group(1))
+        
+        # 提取期望的token: "Expected one of: ID, NUM, ..."
+        expected_match = re.search(r'Expected\s+(?:one\s+of\s*:)?\s*([^\.]+)', error_msg)
+        if expected_match:
+            tokens_str = expected_match.group(1).strip()
+            # 分割token列表
+            tokens = [t.strip() for t in tokens_str.split(',') if t.strip()]
+            result['expected_tokens'] = tokens
+        
+        return result
 
 
 def main(args: list = None) -> int:
