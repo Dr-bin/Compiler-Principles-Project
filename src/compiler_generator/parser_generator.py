@@ -4,7 +4,7 @@
 将上下文无关文法(BNF)转换为解析器。
 """
 
-from typing import List, Dict, Tuple, Any, Optional, Set
+from typing import List, Dict, Set
 from dataclasses import dataclass
 from src.compiler_generator.lexer_generator import Token
 
@@ -227,42 +227,98 @@ class ParserGenerator:
         """对文法进行左因子提取"""
         new_grammar = self.grammar.copy()
         counter = 0
+        # 迭代处理，直到所有非终结符都没有公共左因子
+        non_terminals_to_check = set(self.grammar.keys())
 
-        for A, productions in self.grammar.items():
+        # 设置一个安全计数器，防止无限循环
+        max_iterations = len(self.grammar) * 2
+
+        while non_terminals_to_check and max_iterations > 0:
+            A = non_terminals_to_check.pop()
+            max_iterations -= 1
+
+            productions = new_grammar.get(A, [])
             if not productions: continue
 
-            groups = {}
-            for prod in productions:
-                first_symbol = prod[0] if prod else self.epsilon_symbol
-                groups.setdefault(first_symbol, []).append(prod)
+            # 1. 对产生式列表进行排序，便于寻找公共前缀
+            # 排序规则：按符号类型和长度，以确保稳定性
+            sorted_productions = sorted(productions)
+
+            groups = []  # 存储分组后的产生式：[[prod1, prod2], [prod3], ...]
+            i = 0
+            while i < len(sorted_productions):
+                current_prod = sorted_productions[i]
+                current_group = [current_prod]
+
+                # 寻找与 current_prod 具有公共前缀的所有产生式
+                j = i + 1
+                while j < len(sorted_productions):
+                    next_prod = sorted_productions[j]
+
+                    # 寻找 current_prod 和 next_prod 之间的公共前缀
+                    alpha = []
+                    min_len = min(len(current_prod), len(next_prod))
+                    for k in range(min_len):
+                        if current_prod[k] == next_prod[k]:
+                            alpha.append(current_prod[k])
+                        else:
+                            break
+
+                    # 如果公共前缀非空，则将 next_prod 视为同一组的候选项
+                    if alpha:
+                        # 确保 current_group 存储的是具有最长公共前缀的组
+                        # 这里的逻辑比较复杂，为了保证找到最长的公共前缀，我们采用贪婪策略
+                        # 简化处理：我们只检查第一个符号是否相同，如果有公共前缀，就分组
+                        # 但为了提取最长公共前缀，我们应该使用更精细的逻辑。
+                        # 重新简化：只检查第一个符号，然后对组内寻找最长公共前缀
+                        if current_prod and next_prod and current_prod[0] == next_prod[0]:
+                            current_group.append(next_prod)
+                            j += 1
+                        else:
+                            break
+                    else:
+                        break  # 没有公共前缀，结束这个组的寻找
+
+                groups.append(current_group)
+                i += len(current_group)  # 跳过已经分组的产生式
 
             new_productions_for_A = []
-            for first_symbol, group in groups.items():
+
+            for group in groups:
                 if len(group) < 2:
                     new_productions_for_A.extend(group)
                     continue
 
-                # 寻找最长公共前缀
-                min_len = min(len(p) for p in group)
+                # 寻找组内所有产生式的最长公共前缀 (Alpha)
+                # 假设 group 不为空
                 alpha = []
-                for i in range(min_len):
-                    current_symbol = group[0][i]
-                    if all(len(p) > i and p[i] == current_symbol for p in group[1:]):
+                min_len = min(len(p) for p in group)
+
+                for i_sym in range(min_len):
+                    current_symbol = group[0][i_sym]
+                    # 检查组内所有产生式在 i_sym 位置是否都匹配
+                    if all(len(p) > i_sym and p[i_sym] == current_symbol for p in group[1:]):
                         alpha.append(current_symbol)
                     else:
                         break
 
                 if not alpha:
+                    # 没有公共前缀，或者公共前缀为空串
                     new_productions_for_A.extend(group)
                     continue
 
-                # 修改：使用 _LF_TAIL_ 命名以符合测试预期
+                # 找到最长公共前缀 alpha，现在执行提取操作
                 new_non_terminal = f"{A}_LF_TAIL_{counter}"
                 counter += 1
 
                 new_tail_productions = []
                 for prod in group:
+                    # 剩余部分 (Beta)
                     new_tail_productions.append(prod[len(alpha):])
+
+                # 添加新的非终结符到待检查列表，因为它也可能需要左因子提取
+                if len(new_tail_productions) > 1:
+                    non_terminals_to_check.add(new_non_terminal)
 
                 new_grammar[new_non_terminal] = new_tail_productions
                 new_productions_for_A.append(alpha + [new_non_terminal])

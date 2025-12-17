@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
 # =============================================================================
-# 自动生成的编译器
-# 生成时间: 2025-12-17 00:41:58
+# 自动生成的编译器 (LL(1) 优化版)
+# 生成时间: 2025-12-17 12:53:31
 # =============================================================================
 
 import sys
 import argparse
+from dataclasses import dataclass, field
 from typing import List, Optional
 
-# =============================================================================
-# 编译错误异常类
-# =============================================================================
-
-class CompilationError(Exception):
-    """编译错误异常"""
-    pass
-
+# --- 词法分析器部分 ---
 
 # =============================================================================
 # 自动生成的词法分析器
@@ -41,35 +35,17 @@ class GeneratedLexer:
     
     def __init__(self):
         self.token_specs = [
-            ('VAR', r'var'),
-            ('WHILE', r'while'),
-            ('IF', r'if'),
-            ('ELSE', r'else'),
-            ('READ', r'read'),
-            ('WRITE', r'write'),
-            ('AND', r'and'),
-            ('OR', r'or'),
-            ('NOT', r'not'),
+            ('PRINT', r'print'),
             ('ID', r'[a-zA-Z_][a-zA-Z0-9_]*'),
-            ('NUM', r'[0-9]+'),
-            ('ASSIGN', r'='),
+            ('NUM', r'[0-9]+(?:\.[0-9]+)?'),
             ('PLUS', r'\+'),
             ('MINUS', r'-'),
             ('MUL', r'\*'),
             ('DIV', r'/'),
-            ('MOD', r'%'),
-            ('LT', r'<'),
-            ('LE', r'<='),
-            ('GT', r'>'),
-            ('GE', r'>='),
-            ('EQ', r'=='),
-            ('NE', r'<>'),
+            ('ASSIGN', r'='),
             ('LPAREN', r'\('),
             ('RPAREN', r'\)'),
-            ('LBRACE', r'\{'),
-            ('RBRACE', r'\}'),
             ('SEMI', r';'),
-            ('COMMA', r','),
         ]
         self.compiled_patterns = [(name, re.compile(pattern)) for name, pattern in self.token_specs]
     
@@ -124,6 +100,7 @@ class GeneratedLexer:
         return tokens
 
 
+# --- 语法分析器部分 ---
 
 # =============================================================================
 # 自动生成的语法分析器
@@ -157,76 +134,61 @@ class GeneratedParser:
         self.pos = 0
         self.grammar = {
             'Program': [
-                ['DeclList', 'StmtList'],
-            ],
-            'DeclList': [
-                ['VarDecl', 'DeclList'],
-                ['VarDecl'],
-                [],
-            ],
-            'VarDecl': [
-                ["'VAR'", 'IDList', "'SEMI'"],
-            ],
-            'IDList': [
-                ["'ID'", "'COMMA'", 'IDList'],
-                ["'ID'"],
+                ['StmtList'],
             ],
             'StmtList': [
-                ['Stmt', 'StmtList'],
-                ['Stmt'],
+                ['Stmt', 'StmtList_LF_TAIL_0'],
             ],
             'Stmt': [
-                ['AssignStmt'],
-                ['IfStmt'],
-                ['WhileStmt'],
-                ['ReadStmt'],
-                ['WriteStmt'],
-                ['Block'],
-            ],
-            'AssignStmt': [
+                ["'PRINT'", "'LPAREN'", 'Expr', "'RPAREN'", "'SEMI'"],
                 ["'ID'", "'ASSIGN'", 'Expr', "'SEMI'"],
             ],
-            'IfStmt': [
-                ["'IF'", "'LPAREN'", 'BoolExpr', "'RPAREN'", 'Stmt', "'ELSE'", 'Stmt'],
-                ["'IF'", "'LPAREN'", 'BoolExpr', "'RPAREN'", 'Stmt'],
-            ],
-            'WhileStmt': [
-                ["'WHILE'", "'LPAREN'", 'BoolExpr', "'RPAREN'", 'Stmt'],
-            ],
-            'ReadStmt': [
-                ["'READ'", "'ID'", "'SEMI'"],
-            ],
-            'WriteStmt': [
-                ["'WRITE'", "'LPAREN'", 'Expr', "'RPAREN'", "'SEMI'"],
-            ],
-            'Block': [
-                ["'LBRACE'", 'StmtList', "'RBRACE'"],
-            ],
-            'BoolExpr': [
-                ['Expr', 'RelOp', 'Expr'],
-            ],
-            'RelOp': [
-                ["'LT'"],
-                ["'LE'"],
-                ["'GT'"],
-                ["'GE'"],
-                ["'EQ'"],
-                ["'NE'"],
-            ],
             'Expr': [
-                ['Term', "'PLUS'", 'Expr'],
-                ['Term', "'MINUS'", 'Expr'],
-                ['Term'],
+                ['Term', 'Expr_LF_TAIL_3'],
+            ],
+            'AddOp': [
+                ["'MINUS'", 'Term', 'AddOp_LF_TAIL_5'],
+                ["'PLUS'", 'Term', 'AddOp_LF_TAIL_6'],
             ],
             'Term': [
-                ['Factor', "'MUL'", 'Term'],
-                ['Factor', "'DIV'", 'Term'],
-                ['Factor'],
+                ['Factor', 'Term_LF_TAIL_4'],
+            ],
+            'MulOp': [
+                ["'DIV'", 'Factor', 'MulOp_LF_TAIL_1'],
+                ["'MUL'", 'Factor', 'MulOp_LF_TAIL_2'],
             ],
             'Factor': [
                 ["'LPAREN'", 'Expr', "'RPAREN'"],
-                ["'NUM'"],
                 ["'ID'"],
+                ["'NUM'"],
+            ],
+            'StmtList_LF_TAIL_0': [
+                ['StmtList'],
+                [],
+            ],
+            'MulOp_LF_TAIL_1': [
+                ['MulOp'],
+                [],
+            ],
+            'MulOp_LF_TAIL_2': [
+                ['MulOp'],
+                [],
+            ],
+            'Expr_LF_TAIL_3': [
+                ['AddOp'],
+                [],
+            ],
+            'Term_LF_TAIL_4': [
+                ['MulOp'],
+                [],
+            ],
+            'AddOp_LF_TAIL_5': [
+                ['AddOp'],
+                [],
+            ],
+            'AddOp_LF_TAIL_6': [
+                ['AddOp'],
+                [],
             ],
         }
         self.start_symbol = 'Program'
@@ -319,315 +281,148 @@ class GeneratedParser:
 
 
 # =============================================================================
+# 异常定义
+# =============================================================================
+
+class CompilationError(Exception):
+    """编译过程中的自定义错误"""
+    pass
+
+# =============================================================================
 # 代码生成器
 # =============================================================================
 
 class CodeGenerator:
-    """代码生成器 - 从AST生成三地址码"""
-    
     def __init__(self):
         self.code_list = []
         self.temp_counter = 0
-        self.label_counter = 0
-    
+
     def new_temp(self):
         self.temp_counter += 1
         return f"t{self.temp_counter}"
-    
-    def new_label(self):
-        self.label_counter += 1
-        return f"L{self.label_counter}"
-    
+
     def generate(self, ast):
-        """从AST生成三地址码"""
+        self.code_list = []
+        self.temp_counter = 0
         self._traverse(ast)
         return self.code_list
-    
+
     def _traverse(self, node):
-        if not node:
-            return None
-        
-        # 程序和语句列表
-        if node.name in ['Program', 'StmtList']:
-            for child in node.children:
-                self._traverse(child)
-            return None
-        
-        # 语句：Stmt节点的子节点是具体的语句类型
-        elif node.name == 'Stmt':
-            # Stmt节点只有一个子节点，即具体的语句类型（如AssignStmt、IfStmt等）
-            if node.children:
-                return self._traverse(node.children[0])
-            return None
-        
-        # 赋值语句: ID = Expr ;
-        elif node.name == 'AssignStmt':
-            if len(node.children) >= 4 and node.children[0].name == "'ID'":
-                var_name = node.children[0].token.value
-                expr_value = self._traverse(node.children[2])
-                if var_name and expr_value:
-                    self.code_list.append(f"{var_name} = {expr_value}")
-            return None
-        
-        # print语句
-        elif node.name == 'PrintStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'PRINT'":
-                expr_value = self._traverse(node.children[2])
-                if expr_value:
-                    self.code_list.append(f"print({expr_value})")
-            return None
-        
-        # write语句: WRITE (Expr);
-        elif node.name == 'WriteStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'WRITE'":
-                expr_value = self._traverse(node.children[2])
-                if expr_value:
-                    self.code_list.append(f"print({expr_value})")
-            return None
-        
-        # while语句: WHILE (BoolExpr) Stmt
-        elif node.name == 'WhileStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'WHILE'":
-                # 生成循环标签
-                loop_label = self.new_label()
-                exit_label = self.new_label()
-                
-                # 循环开始标签
-                self.code_list.append(f"{loop_label}:")
-                
-                # 处理布尔表达式
-                bool_expr = node.children[2]
-                bool_result = self._traverse(bool_expr)
-                if bool_result:
-                    self.code_list.append(f"if not {bool_result} goto {exit_label}")
-                
-                # 处理循环体
-                body_stmt = node.children[4]
-                self._traverse(body_stmt)
-                
-                # 跳回循环开始
-                self.code_list.append(f"goto {loop_label}")
-                
-                # 循环结束标签
-                self.code_list.append(f"{exit_label}:")
-            return None
-        
-        # if语句: IF (BoolExpr) Stmt 或 IF (BoolExpr) Stmt ELSE Stmt
-        elif node.name == 'IfStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'IF'":
-                else_label = self.new_label()
-                exit_label = self.new_label()
-                
-                # 处理布尔表达式
-                bool_expr = node.children[2]
-                bool_result = self._traverse(bool_expr)
-                if bool_result:
-                    self.code_list.append(f"if not {bool_result} goto {else_label}")
-                
-                # 处理if分支
-                then_stmt = node.children[4]
-                self._traverse(then_stmt)
-                
-                # 跳转到if结束
-                self.code_list.append(f"goto {exit_label}")
-                
-                # else分支开始标签
-                self.code_list.append(f"{else_label}:")
-                
-                # 处理else分支（如果有）
-                if len(node.children) >= 7 and node.children[5].name == "'ELSE'":
-                    else_stmt = node.children[6]
-                    self._traverse(else_stmt)
-                
-                # if结束标签
-                self.code_list.append(f"{exit_label}:")
-            return None
-        
-        # 块语句: { StmtList }
-        elif node.name == 'Block':
-            # 块包含一个语句列表，遍历处理
-            if len(node.children) >= 3:
-                stmt_list = node.children[1]
-                self._traverse(stmt_list)
-            return None
-        
-        # 布尔表达式
-        elif node.name == 'BoolExpr':
-            if len(node.children) >= 3:
-                expr1 = self._traverse(node.children[0])
-                relop = self._traverse(node.children[1])
-                expr2 = self._traverse(node.children[2])
-                if expr1 and relop and expr2:
-                    return f"{expr1} {relop} {expr2}"
-            return None
-        
-        # 关系操作符
-        elif node.name == 'RelOp':
-            if len(node.children) == 1:
-                return self._traverse(node.children[0])
-            return None
-        
-        # 表达式：根据语法规则，Expr -> Term | Term 'PLUS' Expr | Term 'MINUS' Expr
-        elif node.name == 'Expr':
-            if len(node.children) == 1:
-                # Expr -> Term
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 3:
-                # Expr -> Term 'PLUS' Expr 或 Expr -> Term 'MINUS' Expr
-                left = self._traverse(node.children[0])
-                op = node.children[1].token.value if node.children[1].token else ''
-                right = self._traverse(node.children[2])
-                if left and op and right:
-                    temp = self.new_temp()
-                    self.code_list.append(f"{temp} = {left} {op} {right}")
-                    return temp
-            return None
-        
-        # 项：根据语法规则，Term -> Factor | Factor 'MUL' Term | Factor 'DIV' Term
-        elif node.name == 'Term':
-            if len(node.children) == 1:
-                # Term -> Factor
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 3:
-                # Term -> Factor 'MUL' Term 或 Term -> Factor 'DIV' Term
-                left = self._traverse(node.children[0])
-                op = node.children[1].token.value if node.children[1].token else ''
-                right = self._traverse(node.children[2])
-                if left and op and right:
-                    temp = self.new_temp()
-                    self.code_list.append(f"{temp} = {left} {op} {right}")
-                    return temp
-            return None
-        
-        # 因子：根据语法规则，Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'
+        if not node: return None
+
+        # 1. 结构性节点处理 (Program / StmtList)
+        if node.name in ['Program', 'StmtList'] or "_LF_TAIL" in node.name:
+            if "_LF_TAIL" in node.name and not node.children:
+                return None
+
+            # 如果是 StmtList 或 Program，递归处理所有子节点
+            if node.name in ['Program', 'StmtList']:
+                for child in node.children:
+                    self._traverse(child)
+                return None
+
+            # 如果是表达式尾部，特殊处理
+            return self._handle_tail_recursive(node)
+
+        # 2. 表达式处理 (Expr / Term)
+        if node.name in ['Expr', 'Expression', 'Term']:
+            left_val = self._traverse(node.children[0])
+            if len(node.children) > 1:
+                return self._handle_tail_recursive(node.children[1], left_val)
+            return left_val
+
+        # 3. 语句处理
+        elif node.name == 'Stmt' or node.name == 'Statement':
+            if not node.children: return None
+            first_child = node.children[0]
+
+            # 赋值语句 ID = Expr ;
+            if first_child.name == "'ID'":
+                var_name = first_child.token.value if first_child.token else "var"
+                val = self._traverse(node.children[2])
+                self.code_list.append(f"{var_name} = {val}")
+                return None
+
+            # 打印语句 PRINT ( Expr ) ;
+            elif first_child.name == "'PRINT'":
+                val = self._traverse(node.children[2])
+                self.code_list.append(f"print {val}")
+                return None
+
+        # 4. 因子处理 (Factor)
         elif node.name == 'Factor':
-            if len(node.children) == 1:
-                # Factor -> 'NUM' 或 Factor -> 'ID'
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 3:
-                # Factor -> 'LPAREN' Expr 'RPAREN'
+            if node.children[0].name == "'LPAREN'":
                 return self._traverse(node.children[1])
-        
-        # 关系操作符的终端节点处理
-        elif node.name in ['PLUS', 'MINUS', 'MUL', 'DIV', 'EQ', 'NE', 'LT', 'LE', 'GT', 'GE']:
-            if node.token:
-                return node.token.value
-        
-        # 括号等特殊字符
-        elif node.name in ['LPAREN', 'RPAREN', 'LBRACE', 'RBRACE', 'SEMI', 'COMMA']:
-            return None
-        
-        # 终结符
-        elif node.name in ['NUM', 'ID'] or (node.name.startswith("'") and node.name.endswith("'")):
-            if node.token:
-                return node.token.value
-        
-        return None
-    
-    def _handle_addop(self, node, left):
-        if len(node.children) >= 2:
-            op = node.children[0].token.value
-            right = self._traverse(node.children[1])
-            temp = self.new_temp()
-            self.code_list.append(f"{temp} = {left} {op} {right}")
-            if len(node.children) >= 3:
-                return self._handle_addop(node.children[2], temp)
-            return temp
-        return left
-    
-    def _handle_mulop(self, node, left):
-        if len(node.children) >= 2:
-            op = node.children[0].token.value
-            right = self._traverse(node.children[1])
-            temp = self.new_temp()
-            self.code_list.append(f"{temp} = {left} {op} {right}")
-            if len(node.children) >= 3:
-                return self._handle_mulop(node.children[2], temp)
-            return temp
-        return left
+            return self._traverse(node.children[0])
+
+        # 5. 终端节点
+        if node.token:
+            return node.token.value
+
+        # 默认递归
+        result = None
+        for child in node.children:
+            result = self._traverse(child)
+        return result
+
+    def _handle_tail_recursive(self, tail_node, left_val=None):
+        """递归处理优化后的右深嵌套 AST，生成符合左结合的三地址码"""
+        if not tail_node or not tail_node.children:
+            return left_val
+
+        # 提取操作符和右操作数
+        # 结构通常为: [AddOp/MulOp, FurtherTail]
+        op_group = tail_node.children[0]
+
+        # 从 AddOp/MulOp 中提取具体的符号和对应的 Term/Factor
+        op_symbol = op_group.children[0].token.value
+        right_operand_node = op_group.children[1]
+        right_val = self._traverse(right_operand_node)
+
+        # 生成 TAC
+        target = self.new_temp()
+        self.code_list.append(f"{target} = {left_val} {op_symbol} {right_val}")
+
+        # 递归处理后续的 Tail
+        if len(op_group.children) > 2:
+            return self._handle_tail_recursive(op_group.children[2], target)
+        if len(tail_node.children) > 1:
+            return self._handle_tail_recursive(tail_node.children[1], target)
+
+        return target
 
 # =============================================================================
-# 主程序
+# 编译器入口封装
 # =============================================================================
 
 class GeneratedCompiler:
-    """生成的编译器主类"""
-    
     def __init__(self):
-        self.lexer = GeneratedLexer()
+        self.lexer = GeneratedLexer() 
         self.parser = GeneratedParser()
         self.codegen = CodeGenerator()
-    
+
     def compile(self, source_code: str) -> List[str]:
-        """编译源代码"""
-        # 词法分析
-        try:
-            tokens = self.lexer.tokenize(source_code)
-        except SyntaxError as e:
-            raise CompilationError(f"词法错误: {str(e)}")
-        except Exception as e:
-            raise CompilationError(f"词法分析失败: {str(e)}")
-        
-        # 语法分析
-        try:
-            ast = self.parser.parse(tokens)
-        except SyntaxError as e:
-            raise CompilationError(f"语法错误: {str(e)}")
-        except Exception as e:
-            raise CompilationError(f"语法分析失败: {str(e)}")
-        
-        # 代码生成
-        try:
-            code = self.codegen.generate(ast)
-        except Exception as e:
-            raise CompilationError(f"代码生成失败: {str(e)}")
-        
-        return code
-    
+        tokens = self.lexer.tokenize(source_code)
+        ast = self.parser.parse(tokens)
+        return self.codegen.generate(ast)
+
     def compile_file(self, input_file: str, output_file: str):
-        """编译文件"""
-        print(f"[编译] 开始编译: {input_file}")
-        
         try:
             with open(input_file, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-        except FileNotFoundError:
-            print(f"[错误] 文件不存在: {input_file}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"[错误] 读取文件失败: {str(e)}")
-            sys.exit(1)
-        
-        try:
             code = self.compile(source_code)
-        except CompilationError as e:
-            print(f"\n======================================================================")
-            print(f"[错误] 编译失败")
-            print(f"======================================================================")
-            print(f"{str(e)}")
-            print(f"======================================================================\n")
-            sys.exit(1)
-        except Exception as e:
-            print(f"\n[错误] 编译过程出现异常: {str(e)}")
-            sys.exit(1)
-        
-        try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 for line in code:
                     f.write(line + '\n')
+            print(f"[成功] 编译完成 -> {output_file}")
         except Exception as e:
-            print(f"[错误] 写入输出文件失败: {str(e)}")
-            sys.exit(1)
-        
-        print(f"[成功] 编译完成: {output_file}")
-        print(f"[统计] 生成 {len(code)} 条三地址码")
+            print(f"[错误] {str(e)}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="自动生成的编译器")
-    parser.add_argument("input", help="输入源代码文件路径")
-    parser.add_argument("-o", "--output", required=True, help="输出三地址码文件路径")
-    
-    args = parser.parse_args()
-    
+    arg_parser = argparse.ArgumentParser(description="自动生成的编译器")
+    arg_parser.add_argument("input", help="输入文件")
+    arg_parser.add_argument("-o", "--output", default="output.3ac", help="输出文件")
+
+    args = arg_parser.parse_args()
     compiler = GeneratedCompiler()
     compiler.compile_file(args.input, args.output)

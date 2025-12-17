@@ -99,6 +99,66 @@ class TestParserGenerator:
         # E_TAIL -> EPSILON (空列表)
         assert [] in parser.grammar['E_TAIL']
 
+    def test_left_factoring_logic(self):
+        """测试公共左因子提取是否能解决 Expr 和 StmtList 的冲突"""
+        parser = ParserGenerator()
+
+        # 模拟 StmtList -> Stmt StmtList | Stmt
+        parser.add_production('StmtList', ['Stmt', 'StmtList'])
+        parser.add_production('StmtList', ['Stmt'])
+
+        # 模拟 Expr -> Term '+' Expr | Term '-' Expr | Term
+        parser.add_production('Expr', ['Term', "'PLUS'", 'Expr'])
+        parser.add_production('Expr', ['Term', "'MINUS'", 'Expr'])
+        parser.add_production('Expr', ['Term'])
+
+        # 执行左因子提取
+        parser._perform_left_factoring()
+
+        # 验证 StmtList 是否被合并
+        # 应该变成 StmtList -> Stmt StmtList_LF_TAIL_X
+        # StmtList_LF_TAIL_X -> StmtList | epsilon
+        assert len(parser.grammar['StmtList']) == 1
+        assert parser.grammar['StmtList'][0][0] == 'Stmt'
+
+        # 验证 Expr 是否被合并
+        # 应该变成 Expr -> Term Expr_LF_TAIL_Y
+        assert len(parser.grammar['Expr']) == 1
+        assert parser.grammar['Expr'][0][0] == 'Term'
+
+        # 验证尾部非终结符是否存在且包含 epsilon ([])
+        tail_name = parser.grammar['Expr'][0][1]
+        assert tail_name in parser.grammar
+        assert [] in parser.grammar[tail_name]  # 必须包含空产生式
+
+    def test_strict_left_factoring(self):
+        """严格验证左因子提取后的文法结构"""
+        parser = ParserGenerator()
+        # 构造典型的 LL(1) 冲突文法
+        parser.add_production('Expr', ['Term', 'AddOp'])
+        parser.add_production('Expr', ['Term'])
+
+        # 模拟 build 流程
+        parser._perform_left_factoring()
+
+        # 1. 验证 Expr 产生式数量是否减少为 1 (提取后合并为一条)
+        assert len(parser.grammar['Expr']) == 1, "Expr 的产生式应该被合并为一条前缀路径"
+
+        # 2. 验证是否生成了新的 TAIL 非终结符
+        tail_nt = parser.grammar['Expr'][0][-1]
+        assert "LF_TAIL" in tail_nt, f"应该生成包含 LF_TAIL 的新符号，实际为: {tail_nt}"
+
+        # 3. 验证 TAIL 内部是否包含空产生式 (epsilon)
+        tail_productions = parser.grammar[tail_nt]
+        assert [] in tail_productions, "提取后的尾部必须包含空产生式 []"
+        assert ['AddOp'] in tail_productions, "提取后的尾部必须包含剩余的 AddOp"
+
+        # 4. 验证 StmtList 冲突 (常见于 Program -> StmtList)
+        parser.add_production('StmtList', ['Stmt', 'StmtList'])
+        parser.add_production('StmtList', ['Stmt'])
+        parser._perform_left_factoring()
+        assert len(parser.grammar['StmtList']) == 1
+
     def test_parse_with_epsilon_production(self):
         """测试ε（空串）产生式和FOLLOW集合选择"""
 

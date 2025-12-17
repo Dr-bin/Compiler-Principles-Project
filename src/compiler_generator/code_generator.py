@@ -4,20 +4,19 @@
 使用语法制导翻译(Syntax-Directed Translation)技术。
 """
 
-from typing import List, Dict, Optional, Any
+from typing import  Dict, Optional, Any
 from src.compiler_generator.parser_generator import ASTNode
-
 
 class CodeGenerator:
     """代码生成器类
-    
+
     从AST生成中间代码（三地址码）。
     支持简单的表达式、赋值语句等。
     """
 
     def __init__(self):
         """初始化代码生成器
-        
+
         属性说明:
             code_list: 生成的中间代码指令列表
             temp_counter: 临时变量计数器（用于生成 t1, t2, ...）
@@ -31,65 +30,36 @@ class CodeGenerator:
 
     def new_temp(self) -> str:
         """生成一个新的临时变量名称
-        
+
         返回:
             临时变量名称，格式为 t1, t2, t3, ...
-            
-        说明:
-            临时变量用于存储中间计算结果。
         """
         self.temp_counter += 1
         return f"t{self.temp_counter}"
 
     def new_label(self) -> str:
         """生成一个新的标签名称
-        
+
         返回:
             标签名称，格式为 L1, L2, L3, ...
-            
-        说明:
-            标签用于代码跳转（条件跳转、循环等）。
         """
         self.label_counter += 1
         return f"L{self.label_counter}"
 
     def emit(self, op: str, arg1: str = "", arg2: str = "", result: str = "") -> None:
         """发出一条三地址码指令
-        
-        参数:
-            op: 操作符（如 '+', '-', '*', '=', 'goto'等）
-            arg1: 第一个操作数
-            arg2: 第二个操作数
-            result: 结果变量
-            
-        返回:
-            None
-            
-        说明:
-            生成的指令格式：result = arg1 op arg2
-            对于某些操作（如 goto、label），可能没有 result。
+
+        生成的指令格式：result = arg1 op arg2
         """
         if result:
             instruction = f"{result} = {arg1} {op} {arg2}".strip()
         else:
             instruction = f"{op} {arg1} {arg2}".strip()
-        
+
         self.code_list.append(instruction)
 
     def add_symbol(self, name: str, var_type: str = "int", value: Any = None) -> None:
-        """将一个符号（变量）添加到符号表
-        
-        参数:
-            name: 变量名称
-            var_type: 变量类型（如 'int', 'float'等）
-            value: 变量的初始值
-            
-        返回:
-            None
-            
-        说明:
-            符号表用于记录变量的类型、作用域等信息。
-        """
+        """将一个符号（变量）添加到符号表"""
         self.symbol_table[name] = {
             'type': var_type,
             'value': value,
@@ -97,601 +67,313 @@ class CodeGenerator:
         }
 
     def lookup_symbol(self, name: str) -> Optional[Dict[str, Any]]:
-        """查找符号表中的一个符号
-        
-        参数:
-            name: 要查找的符号名称
-            
-        返回:
-            符号信息字典，如果不存在则返回 None
-            
-        说明:
-            用于检查变量是否已定义。
-        """
+        """查找符号表中的一个符号"""
         return self.symbol_table.get(name)
 
     def generate_from_ast(self, node: ASTNode) -> str:
-        """从AST生成中间代码
-        
-        参数:
-            node: AST根节点
-            
-        返回:
-            生成的中间代码字符串
-            
-        说明:
-            这是代码生成的主方法，递归遍历AST并生成代码。
-            需要根据具体的语言语法进行定制。
-        """
+        """从AST生成中间代码的主方法"""
         self._traverse_ast(node)
         return self.get_code()
 
-    def _traverse_ast(self, node: ASTNode) -> Optional[str]:
-        """递归遍历AST并生成代码
-        
-        参数:
-            node: 当前AST节点
-            
-        返回:
-            该节点对应的计算结果（如果有的话）
-            
-        说明:
-            这是一个通用的AST遍历方法。
-            对于不同类型的语言，需要在子类中重写此方法。
+    def _handle_tail_recursive(self, tail_node: ASTNode, left_val: str) -> str:
         """
+        递归处理优化后的右深嵌套 AST，生成符合左结合的三地址码。
+        适用于加减法(Expr_LF_TAIL)和乘除法(Term_LF_TAIL)。
+        """
+        if not tail_node or not tail_node.children:
+            return left_val
+
+        # 结构通常为: [Op_Node, Next_Operand, Optional_Further_Tail]
+        # 1. 提取操作符和右操作数
+        op_group_node = tail_node.children[0]
+
+        # 兼容性处理：如果 op 节点本身还有子节点(如 AddOp -> '+' Term)
+        if op_group_node.children:
+            op_symbol = op_group_node.children[0].token.value
+            right_val = self._traverse_ast(op_group_node.children[1])
+
+            # 生成临时变量存放计算结果
+            target = self.new_temp()
+            self.emit(op_symbol, left_val, right_val, target)
+
+            # 2. 检查 Op_Node 内部是否带有递归尾部
+            if len(op_group_node.children) > 2:
+                return self._handle_tail_recursive(op_group_node.children[2], target)
+
+            # 3. 检查 Tail_Node 本身是否带有递归尾部
+            if len(tail_node.children) > 1:
+                return self._handle_tail_recursive(tail_node.children[1], target)
+
+            return target
+
+        return left_val
+
+    def _traverse_ast(self, node: ASTNode) -> Optional[str]:
+        """递归遍历AST并生成代码"""
         if not node:
             return None
 
-        # 根据节点名称处理不同的语言结构
-        if node.name == 'Program':
-            # 程序：遍历所有语句
+        # 1. 程序与列表逻辑
+        if node.name in ['Program', 'StmtList', 'StmtList_LF_TAIL_0']:
             for child in node.children:
                 self._traverse_ast(child)
             return None
 
-        elif node.name == 'StmtList':
-            # 语句列表：遍历所有语句
-            for child in node.children:
-                self._traverse_ast(child)
-            return None
-
+        # 2. 语句处理：赋值 ID = Expr ; 或 PRINT ( Expr ) ;
         elif node.name == 'Stmt' or node.name == 'Statement':
-            # 语句：处理赋值、输出等
-            # 赋值语句: ID = Expr ;
-            if len(node.children) >= 4 and node.children[0].name == "'ID'":
-                var_node = node.children[0]  # 'ID' 节点
-                expr_node = node.children[2]  # Expr 节点
-                
-                var_name = var_node.token.value if var_node.token else ""
-                expr_value = self._traverse_ast(expr_node)
-                
+            if not node.children: return None
+
+            first_child = node.children[0]
+            # 识别赋值语句 (第一个孩子是 ID)
+            if first_child.name == "'ID'":
+                var_name = first_child.token.value if first_child.token else ""
+                expr_value = self._traverse_ast(node.children[2])
                 if var_name and expr_value:
-                    # 格式: var_name = expr_value (空 op)
                     self.code_list.append(f"{var_name} = {expr_value}")
                     self.add_symbol(var_name)
-            # print 语句: PRINT ( Expr ) ;
-            elif len(node.children) >= 5 and node.children[0].name == "'PRINT'":
-                expr_node = node.children[2]  # Expr 节点在位置 2
-                expr_value = self._traverse_ast(expr_node)
+            # 识别打印语句 (第一个孩子是 PRINT)
+            elif first_child.name == "'PRINT'":
+                expr_value = self._traverse_ast(node.children[2])
                 if expr_value:
-                    self.code_list.append(f"print({expr_value})")
+                    self.code_list.append(f"print {expr_value}")
             return None
 
-        elif node.name == 'Expr' or node.name == 'Expression':
-            # 表达式：处理加减运算
-            # Expr -> Term AddOp | Term
-            if len(node.children) == 1:
-                # 简单表达式（单个项）
-                return self._traverse_ast(node.children[0])
-            elif len(node.children) >= 2:
-                # 二元运算: Term AddOp (或更多)
-                # 获取第一个Term
-                result = self._traverse_ast(node.children[0])
-                
-                # 处理所有的 AddOp/MulOp 或其他
-                for i in range(1, len(node.children)):
-                    child = node.children[i]
-                    if child.name == 'AddOp':
-                        result = self._traverse_add_op(child, result)
-                    else:
-                        result = self._traverse_ast(child)
-                
-                return result
-            return None
+        # 3. 表达式处理 (Expr 和 Term 结构在 LL1 下是一致的)
+        elif node.name in ['Expr', 'Expression', 'Term']:
+            # 第一个孩子永远是左操作数 (Term 或 Factor)
+            left_val = self._traverse_ast(node.children[0])
+            # 第二个孩子是 _LF_TAIL 节点
+            if len(node.children) > 1:
+                return self._handle_tail_recursive(node.children[1], left_val)
+            return left_val
 
-        elif node.name == 'Term':
-            # 项：处理乘除等高优先级运算
-            # Term -> Factor MulOp | Factor
-            if len(node.children) == 1:
-                result = self._traverse_ast(node.children[0])
-                return result
-            elif len(node.children) >= 2:
-                # 二元运算: Factor MulOp (或更多)
-                result = self._traverse_ast(node.children[0])
-                
-                # 处理所有的 MulOp
-                for i in range(1, len(node.children)):
-                    child = node.children[i]
-                    if child.name == 'MulOp':
-                        result = self._traverse_mul_op(child, result)
-                    else:
-                        result = self._traverse_ast(child)
-                
-                return result
-            return None
-
+        # 4. 因子处理 (数字、标识符、括号)
         elif node.name == 'Factor':
-            # 因子：数字、标识符或括号表达式
-            if len(node.children) == 1:
-                # 数字或标识符或递归的 'NUM'/'ID' 节点
-                child = node.children[0]
-                result = self._traverse_ast(child)
-                return result
-            elif len(node.children) >= 3:
-                # 括号表达式: '(' Expr ')'
+            if not node.children: return None
+            # 处理 ( Expr )
+            if node.children[0].name == "'LPAREN'":
                 return self._traverse_ast(node.children[1])
-            return None
+            # 处理 ID 或 NUM
+            return self._traverse_ast(node.children[0])
 
+        # 5. 终端节点处理
         elif node.name in ['NUM', 'ID'] or (node.name.startswith("'") and node.name.endswith("'")):
-            # 终结符：直接返回值
             if node.token:
                 return node.token.value
             return None
 
+        # 默认递归处理
         else:
-            # 其他类型的节点：遍历所有子节点
+            result = None
             for child in node.children:
-                self._traverse_ast(child)
-            return None
-
-    def _traverse_add_op(self, add_op_node: ASTNode, left: str) -> str:
-        """处理 AddOp 节点并返回结果
-        
-        参数:
-            add_op_node: AddOp 节点
-            left: 左操作数
-            
-        返回:
-            计算结果（临时变量或值）
-        """
-        if add_op_node.name != 'AddOp':
-            return left
-        
-        if len(add_op_node.children) >= 2:
-            op_node = add_op_node.children[0]
-            op = op_node.token.value if op_node.token else ""
-            term_node = add_op_node.children[1]
-            right = self._traverse_ast(term_node)
-            
-            result = self.new_temp()
-            self.emit(op, left, right, result)
-            
-            # 如果有继续的 AddOp
-            if len(add_op_node.children) >= 3:
-                return self._traverse_add_op(add_op_node.children[2], result)
-            
+                result = self._traverse_ast(child)
             return result
-        
-        return left
-
-    def _traverse_mul_op(self, mul_op_node: ASTNode, left: str) -> str:
-        """处理 MulOp 节点并返回结果
-        
-        参数:
-            mul_op_node: MulOp 节点
-            left: 左操作数
-            
-        返回:
-            计算结果（临时变量或值）
-        """
-        if mul_op_node.name != 'MulOp':
-            return left
-        
-        if len(mul_op_node.children) >= 2:
-            op_node = mul_op_node.children[0]
-            op = op_node.token.value if op_node.token else ""
-            factor_node = mul_op_node.children[1]
-            right = self._traverse_ast(factor_node)
-            
-            result = self.new_temp()
-            self.emit(op, left, right, result)
-            
-            # 如果有继续的 MulOp
-            if len(mul_op_node.children) >= 3:
-                return self._traverse_mul_op(mul_op_node.children[2], result)
-            
-            return result
-        
-        return left
 
     def get_code(self) -> str:
-        """获取生成的中间代码
-        
-        返回:
-            以换行符分隔的中间代码字符串
-            
-        说明:
-            包含所有发出的指令。
-        """
+        """获取生成的中间代码"""
         return '\n'.join(self.code_list)
 
     def print_symbol_table(self) -> str:
-        """打印符号表的内容
-        
-        返回:
-            符号表的字符串表示
-            
-        说明:
-            用于调试，显示所有已定义的符号。
-        """
+        """打印符号表的内容"""
         result = "=== Symbol Table ===\n"
         for name, info in self.symbol_table.items():
             result += f"{name}: {info}\n"
         return result
 
     def reset(self) -> None:
-        """重置代码生成器状态
-        
-        返回:
-            None
-            
-        说明:
-            用于生成多个代码段时清空状态。
-        """
+        """重置代码生成器状态"""
         self.code_list = []
         self.temp_counter = 0
         self.label_counter = 0
         self.symbol_table = {}
 
 
-def generate_compiler_code(lexer_code: str, parser_code: str) -> str:
-    """生成完整的编译器代码
-    
-    参数:
-        lexer_code: 词法分析器代码字符串
-        parser_code: 语法分析器代码字符串
-        
-    返回:
-        完整的可执行编译器Python代码
-    """
-    from datetime import datetime
+from typing import List, Dict, Any
+from datetime import datetime
+from src.compiler_generator.parser_generator import ParserGenerator, generate_parser_code
+
+
+def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: str) -> str:
+    """生成完整的编译器代码"""
+
+    # --- 第一步：强制使用 ParserGenerator 优化文法并生成 Parser 代码 ---
+    pg = ParserGenerator()
+    pg.set_start_symbol(start_symbol)
+    for nt, prods in grammar_rules.items():
+        for p in prods:
+            pg.add_production(nt, p)
+
+    # 执行 LL(1) 转换（消除左递归、左公因子）
+    pg.build_analysis_sets()
+
+    # 获取优化后的文法，传给 generate_parser_code 得到源码
+    optimized_grammar = pg.grammar
+    parser_code = generate_parser_code(optimized_grammar, start_symbol)
+
+    # --- 第二步：生成编译器字符串 ---
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    compiler_code = f'''#!/usr/bin/env python3
+
+    return f'''#!/usr/bin/env python3
 # =============================================================================
-# 自动生成的编译器
+# 自动生成的编译器 (LL(1) 优化版)
 # 生成时间: {current_time}
 # =============================================================================
 
 import sys
 import argparse
+from dataclasses import dataclass, field
 from typing import List, Optional
 
+# --- 词法分析器部分 ---
+{lexer_code}
+
+# --- 语法分析器部分 ---
+{parser_code}
+
 # =============================================================================
-# 编译错误异常类
+# 异常定义
 # =============================================================================
 
 class CompilationError(Exception):
-    """编译错误异常"""
+    """编译过程中的自定义错误"""
     pass
-
-{lexer_code}
-
-{parser_code}
 
 # =============================================================================
 # 代码生成器
 # =============================================================================
 
 class CodeGenerator:
-    """代码生成器 - 从AST生成三地址码"""
-    
     def __init__(self):
         self.code_list = []
         self.temp_counter = 0
-        self.label_counter = 0
-    
+
     def new_temp(self):
         self.temp_counter += 1
         return f"t{{self.temp_counter}}"
-    
-    def new_label(self):
-        self.label_counter += 1
-        return f"L{{self.label_counter}}"
-    
+
     def generate(self, ast):
-        """从AST生成三地址码"""
+        self.code_list = []
+        self.temp_counter = 0
         self._traverse(ast)
         return self.code_list
-    
+
     def _traverse(self, node):
-        if not node:
-            return None
-        
-        # 程序和语句列表
-        if node.name in ['Program', 'StmtList']:
-            for child in node.children:
-                self._traverse(child)
-            return None
-        
-        # 语句：Stmt节点的子节点是具体的语句类型
-        elif node.name == 'Stmt':
-            # Stmt节点只有一个子节点，即具体的语句类型（如AssignStmt、IfStmt等）
-            if node.children:
-                return self._traverse(node.children[0])
-            return None
-        
-        # 赋值语句: ID = Expr ;
-        elif node.name == 'AssignStmt':
-            if len(node.children) >= 4 and node.children[0].name == "'ID'":
-                var_name = node.children[0].token.value
-                expr_value = self._traverse(node.children[2])
-                if var_name and expr_value:
-                    self.code_list.append(f"{{var_name}} = {{expr_value}}")
-            return None
-        
-        # print语句
-        elif node.name == 'PrintStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'PRINT'":
-                expr_value = self._traverse(node.children[2])
-                if expr_value:
-                    self.code_list.append(f"print({{expr_value}})")
-            return None
-        
-        # write语句: WRITE (Expr);
-        elif node.name == 'WriteStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'WRITE'":
-                expr_value = self._traverse(node.children[2])
-                if expr_value:
-                    self.code_list.append(f"print({{expr_value}})")
-            return None
-        
-        # while语句: WHILE (BoolExpr) Stmt
-        elif node.name == 'WhileStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'WHILE'":
-                # 生成循环标签
-                loop_label = self.new_label()
-                exit_label = self.new_label()
-                
-                # 循环开始标签
-                self.code_list.append(f"{{loop_label}}:")
-                
-                # 处理布尔表达式
-                bool_expr = node.children[2]
-                bool_result = self._traverse(bool_expr)
-                if bool_result:
-                    self.code_list.append(f"if not {{bool_result}} goto {{exit_label}}")
-                
-                # 处理循环体
-                body_stmt = node.children[4]
-                self._traverse(body_stmt)
-                
-                # 跳回循环开始
-                self.code_list.append(f"goto {{loop_label}}")
-                
-                # 循环结束标签
-                self.code_list.append(f"{{exit_label}}:")
-            return None
-        
-        # if语句: IF (BoolExpr) Stmt 或 IF (BoolExpr) Stmt ELSE Stmt
-        elif node.name == 'IfStmt':
-            if len(node.children) >= 5 and node.children[0].name == "'IF'":
-                else_label = self.new_label()
-                exit_label = self.new_label()
-                
-                # 处理布尔表达式
-                bool_expr = node.children[2]
-                bool_result = self._traverse(bool_expr)
-                if bool_result:
-                    self.code_list.append(f"if not {{bool_result}} goto {{else_label}}")
-                
-                # 处理if分支
-                then_stmt = node.children[4]
-                self._traverse(then_stmt)
-                
-                # 跳转到if结束
-                self.code_list.append(f"goto {{exit_label}}")
-                
-                # else分支开始标签
-                self.code_list.append(f"{{else_label}}:")
-                
-                # 处理else分支（如果有）
-                if len(node.children) >= 7 and node.children[5].name == "'ELSE'":
-                    else_stmt = node.children[6]
-                    self._traverse(else_stmt)
-                
-                # if结束标签
-                self.code_list.append(f"{{exit_label}}:")
-            return None
-        
-        # 块语句: {{ StmtList }}
-        elif node.name == 'Block':
-            # 块包含一个语句列表，遍历处理
-            if len(node.children) >= 3:
-                stmt_list = node.children[1]
-                self._traverse(stmt_list)
-            return None
-        
-        # 布尔表达式
-        elif node.name == 'BoolExpr':
-            if len(node.children) >= 3:
-                expr1 = self._traverse(node.children[0])
-                relop = self._traverse(node.children[1])
-                expr2 = self._traverse(node.children[2])
-                if expr1 and relop and expr2:
-                    return f"{{expr1}} {{relop}} {{expr2}}"
-            return None
-        
-        # 关系操作符
-        elif node.name == 'RelOp':
-            if len(node.children) == 1:
-                return self._traverse(node.children[0])
-            return None
-        
-        # 表达式：根据语法规则，Expr -> Term | Term 'PLUS' Expr | Term 'MINUS' Expr
-        elif node.name == 'Expr':
-            if len(node.children) == 1:
-                # Expr -> Term
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 3:
-                # Expr -> Term 'PLUS' Expr 或 Expr -> Term 'MINUS' Expr
-                left = self._traverse(node.children[0])
-                op = node.children[1].token.value if node.children[1].token else ''
-                right = self._traverse(node.children[2])
-                if left and op and right:
-                    temp = self.new_temp()
-                    self.code_list.append(f"{{temp}} = {{left}} {{op}} {{right}}")
-                    return temp
-            return None
-        
-        # 项：根据语法规则，Term -> Factor | Factor 'MUL' Term | Factor 'DIV' Term
-        elif node.name == 'Term':
-            if len(node.children) == 1:
-                # Term -> Factor
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 3:
-                # Term -> Factor 'MUL' Term 或 Term -> Factor 'DIV' Term
-                left = self._traverse(node.children[0])
-                op = node.children[1].token.value if node.children[1].token else ''
-                right = self._traverse(node.children[2])
-                if left and op and right:
-                    temp = self.new_temp()
-                    self.code_list.append(f"{{temp}} = {{left}} {{op}} {{right}}")
-                    return temp
-            return None
-        
-        # 因子：根据语法规则，Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'
+        if not node: return None
+
+        # 1. 结构性节点处理 (Program / StmtList)
+        if node.name in ['Program', 'StmtList'] or "_LF_TAIL" in node.name:
+            if "_LF_TAIL" in node.name and not node.children:
+                return None
+
+            # 如果是 StmtList 或 Program，递归处理所有子节点
+            if node.name in ['Program', 'StmtList']:
+                for child in node.children:
+                    self._traverse(child)
+                return None
+
+            # 如果是表达式尾部，特殊处理
+            return self._handle_tail_recursive(node)
+
+        # 2. 表达式处理 (Expr / Term)
+        if node.name in ['Expr', 'Expression', 'Term']:
+            left_val = self._traverse(node.children[0])
+            if len(node.children) > 1:
+                return self._handle_tail_recursive(node.children[1], left_val)
+            return left_val
+
+        # 3. 语句处理
+        elif node.name == 'Stmt' or node.name == 'Statement':
+            if not node.children: return None
+            first_child = node.children[0]
+
+            # 赋值语句 ID = Expr ;
+            if first_child.name == "'ID'":
+                var_name = first_child.token.value if first_child.token else "var"
+                val = self._traverse(node.children[2])
+                self.code_list.append(f"{{var_name}} = {{val}}")
+                return None
+
+            # 打印语句 PRINT ( Expr ) ;
+            elif first_child.name == "'PRINT'":
+                val = self._traverse(node.children[2])
+                self.code_list.append(f"print {{val}}")
+                return None
+
+        # 4. 因子处理 (Factor)
         elif node.name == 'Factor':
-            if len(node.children) == 1:
-                # Factor -> 'NUM' 或 Factor -> 'ID'
-                return self._traverse(node.children[0])
-            elif len(node.children) >= 3:
-                # Factor -> 'LPAREN' Expr 'RPAREN'
+            if node.children[0].name == "'LPAREN'":
                 return self._traverse(node.children[1])
-        
-        # 关系操作符的终端节点处理
-        elif node.name in ['PLUS', 'MINUS', 'MUL', 'DIV', 'EQ', 'NE', 'LT', 'LE', 'GT', 'GE']:
-            if node.token:
-                return node.token.value
-        
-        # 括号等特殊字符
-        elif node.name in ['LPAREN', 'RPAREN', 'LBRACE', 'RBRACE', 'SEMI', 'COMMA']:
-            return None
-        
-        # 终结符
-        elif node.name in ['NUM', 'ID'] or (node.name.startswith("'") and node.name.endswith("'")):
-            if node.token:
-                return node.token.value
-        
-        return None
-    
-    def _handle_addop(self, node, left):
-        if len(node.children) >= 2:
-            op = node.children[0].token.value
-            right = self._traverse(node.children[1])
-            temp = self.new_temp()
-            self.code_list.append(f"{{temp}} = {{left}} {{op}} {{right}}")
-            if len(node.children) >= 3:
-                return self._handle_addop(node.children[2], temp)
-            return temp
-        return left
-    
-    def _handle_mulop(self, node, left):
-        if len(node.children) >= 2:
-            op = node.children[0].token.value
-            right = self._traverse(node.children[1])
-            temp = self.new_temp()
-            self.code_list.append(f"{{temp}} = {{left}} {{op}} {{right}}")
-            if len(node.children) >= 3:
-                return self._handle_mulop(node.children[2], temp)
-            return temp
-        return left
+            return self._traverse(node.children[0])
+
+        # 5. 终端节点
+        if node.token:
+            return node.token.value
+
+        # 默认递归
+        result = None
+        for child in node.children:
+            result = self._traverse(child)
+        return result
+
+    def _handle_tail_recursive(self, tail_node, left_val=None):
+        """递归处理优化后的右深嵌套 AST，生成符合左结合的三地址码"""
+        if not tail_node or not tail_node.children:
+            return left_val
+
+        # 提取操作符和右操作数
+        # 结构通常为: [AddOp/MulOp, FurtherTail]
+        op_group = tail_node.children[0]
+
+        # 从 AddOp/MulOp 中提取具体的符号和对应的 Term/Factor
+        op_symbol = op_group.children[0].token.value
+        right_operand_node = op_group.children[1]
+        right_val = self._traverse(right_operand_node)
+
+        # 生成 TAC
+        target = self.new_temp()
+        self.code_list.append(f"{{target}} = {{left_val}} {{op_symbol}} {{right_val}}")
+
+        # 递归处理后续的 Tail
+        if len(op_group.children) > 2:
+            return self._handle_tail_recursive(op_group.children[2], target)
+        if len(tail_node.children) > 1:
+            return self._handle_tail_recursive(tail_node.children[1], target)
+
+        return target
 
 # =============================================================================
-# 主程序
+# 编译器入口封装
 # =============================================================================
 
 class GeneratedCompiler:
-    """生成的编译器主类"""
-    
     def __init__(self):
-        self.lexer = GeneratedLexer()
+        self.lexer = GeneratedLexer() 
         self.parser = GeneratedParser()
         self.codegen = CodeGenerator()
-    
+
     def compile(self, source_code: str) -> List[str]:
-        """编译源代码"""
-        # 词法分析
-        try:
-            tokens = self.lexer.tokenize(source_code)
-        except SyntaxError as e:
-            raise CompilationError(f"词法错误: {{str(e)}}")
-        except Exception as e:
-            raise CompilationError(f"词法分析失败: {{str(e)}}")
-        
-        # 语法分析
-        try:
-            ast = self.parser.parse(tokens)
-        except SyntaxError as e:
-            raise CompilationError(f"语法错误: {{str(e)}}")
-        except Exception as e:
-            raise CompilationError(f"语法分析失败: {{str(e)}}")
-        
-        # 代码生成
-        try:
-            code = self.codegen.generate(ast)
-        except Exception as e:
-            raise CompilationError(f"代码生成失败: {{str(e)}}")
-        
-        return code
-    
+        tokens = self.lexer.tokenize(source_code)
+        ast = self.parser.parse(tokens)
+        return self.codegen.generate(ast)
+
     def compile_file(self, input_file: str, output_file: str):
-        """编译文件"""
-        print(f"[编译] 开始编译: {{input_file}}")
-        
         try:
             with open(input_file, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-        except FileNotFoundError:
-            print(f"[错误] 文件不存在: {{input_file}}")
-            sys.exit(1)
-        except Exception as e:
-            print(f"[错误] 读取文件失败: {{str(e)}}")
-            sys.exit(1)
-        
-        try:
             code = self.compile(source_code)
-        except CompilationError as e:
-            print(f"\\n{'='*70}")
-            print(f"[错误] 编译失败")
-            print(f"{'='*70}")
-            print(f"{{str(e)}}")
-            print(f"{'='*70}\\n")
-            sys.exit(1)
-        except Exception as e:
-            print(f"\\n[错误] 编译过程出现异常: {{str(e)}}")
-            sys.exit(1)
-        
-        try:
             with open(output_file, 'w', encoding='utf-8') as f:
                 for line in code:
                     f.write(line + '\\n')
+            print(f"[成功] 编译完成 -> {{output_file}}")
         except Exception as e:
-            print(f"[错误] 写入输出文件失败: {{str(e)}}")
-            sys.exit(1)
-        
-        print(f"[成功] 编译完成: {{output_file}}")
-        print(f"[统计] 生成 {{len(code)}} 条三地址码")
+            print(f"[错误] {{str(e)}}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="自动生成的编译器")
-    parser.add_argument("input", help="输入源代码文件路径")
-    parser.add_argument("-o", "--output", required=True, help="输出三地址码文件路径")
-    
-    args = parser.parse_args()
-    
+    arg_parser = argparse.ArgumentParser(description="自动生成的编译器")
+    arg_parser.add_argument("input", help="输入文件")
+    arg_parser.add_argument("-o", "--output", default="output.3ac", help="输出文件")
+
+    args = arg_parser.parse_args()
     compiler = GeneratedCompiler()
     compiler.compile_file(args.input, args.output)
 '''
-    
-    return compiler_code
