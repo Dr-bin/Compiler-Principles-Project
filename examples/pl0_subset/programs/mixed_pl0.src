@@ -15,11 +15,13 @@ while (i <= n)
     i = i + 1;
 }
 
-// 如果 sum 大于 10，则输出 sum，否则输出 n
+// 如果 sum 大于 10，则输出 sum
+// 注意：LL(1)文法不支持else（悬空else冲突）
 if (sum > 10)
     write(sum);
-else
-    write(n);
+
+// 总是输出 n（作为替代）
+write(n);
 
 
 

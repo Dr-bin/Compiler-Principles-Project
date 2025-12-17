@@ -1,15 +1,15 @@
-// PL/0 子集示例：if / else / while / 关系运算
+// PL/0 子集示例：if / while / 关系运算
+// 注意：LL(1)文法不支持else（悬空else冲突）
 
 var x, y, max, i;
 
 x = 3;
 y = 5;
 
-// if-else: 取较大值
+// if语句：设置初始值，如果条件满足则覆盖
+max = x;
 if (x < y) 
     max = y;
-else 
-    max = x;
 
 write(max);
 

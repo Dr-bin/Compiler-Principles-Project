@@ -131,11 +131,12 @@ class CodeGenerator:
                 if var_name and expr_value:
                     self.code_list.append(f"{var_name} = {expr_value}")
                     self.add_symbol(var_name)
-            # 识别打印语句 (第一个孩子是 PRINT)
+            # 识别打印语句 (第一个孩子是 PRINT) - 严格三地址码
             elif first_child.name == "'PRINT'":
                 expr_value = self._traverse_ast(node.children[2])
                 if expr_value:
-                    self.code_list.append(f"print {expr_value}")
+                    self.code_list.append(f"param {expr_value}")
+                    self.code_list.append(f"call print, 1")
             return None
 
         # 3. 表达式处理 (Expr 和 Term 结构在 LL1 下是一致的)
@@ -246,14 +247,20 @@ class CodeGenerator:
     def __init__(self):
         self.code_list = []
         self.temp_counter = 0
+        self.label_counter = 0
 
     def new_temp(self):
         self.temp_counter += 1
         return f"t{{self.temp_counter}}"
 
+    def new_label(self):
+        self.label_counter += 1
+        return f"L{{self.label_counter}}"
+
     def generate(self, ast):
         self.code_list = []
         self.temp_counter = 0
+        self.label_counter = 0
         self._traverse(ast)
         return self.code_list
 
@@ -261,17 +268,16 @@ class CodeGenerator:
         if not node: return None
 
         # 1. 结构性节点处理 (Program / StmtList)
-        if node.name in ['Program', 'StmtList'] or "_LF_TAIL" in node.name:
-            if "_LF_TAIL" in node.name and not node.children:
+        if node.name in ['Program', 'StmtList'] or "StmtList_LF_TAIL" in node.name:
+            # 递归处理所有子节点
+            for child in node.children:
+                self._traverse(child)
+            return None
+        
+        # 1.5 表达式尾部处理 (Expr_LF_TAIL / Term_LF_TAIL / AddOp_LF_TAIL 等)
+        if "_LF_TAIL" in node.name and "StmtList" not in node.name:
+            if not node.children:
                 return None
-
-            # 如果是 StmtList 或 Program，递归处理所有子节点
-            if node.name in ['Program', 'StmtList']:
-                for child in node.children:
-                    self._traverse(child)
-                return None
-
-            # 如果是表达式尾部，特殊处理
             return self._handle_tail_recursive(node)
 
         # 2. 表达式处理 (Expr / Term)
@@ -293,19 +299,111 @@ class CodeGenerator:
                 self.code_list.append(f"{{var_name}} = {{val}}")
                 return None
 
-            # 打印语句 PRINT ( Expr ) ;
+            # 打印语句 PRINT ( Expr ) ; (严格三地址码)
             elif first_child.name == "'PRINT'":
                 val = self._traverse(node.children[2])
-                self.code_list.append(f"print {{val}}")
+                if val:
+                    self.code_list.append(f"param {{val}}")
+                    self.code_list.append(f"call print, 1")
                 return None
 
-        # 4. 因子处理 (Factor)
+            # PL/0格式: 转发给具体语句类型(AssignStmt/WriteStmt等)
+            else:
+                return self._traverse(first_child)
+
+        # 4. AssignStmt: ID ASSIGN Expr SEMI
+        elif node.name == 'AssignStmt':
+            if len(node.children) >= 3:
+                var_name = node.children[0].token.value if node.children[0].token else "var"
+                val = self._traverse(node.children[2])
+                if val:
+                    self.code_list.append(f"{{var_name}} = {{val}}")
+            return None
+
+        # 5. WriteStmt: WRITE ( Expr ) SEMI
+        elif node.name == 'WriteStmt':
+            if len(node.children) >= 3:
+                val = self._traverse(node.children[2])
+                if val:
+                    self.code_list.append(f"param {{val}}")
+                    self.code_list.append(f"call write, 1")
+            return None
+
+        # 6. ReadStmt: READ ID SEMI
+        elif node.name == 'ReadStmt':
+            if len(node.children) >= 2:
+                var_name = node.children[1].token.value if node.children[1].token else "var"
+                temp = self.new_temp()
+                self.code_list.append(f"{{temp}} = call read, 0")
+                self.code_list.append(f"{{var_name}} = {{temp}}")
+            return None
+
+        # 7. WhileStmt: WHILE ( BoolExpr ) Stmt
+        elif node.name == 'WhileStmt':
+            if len(node.children) >= 5:
+                loop_label = self.new_label()
+                exit_label = self.new_label()
+                self.code_list.append(f"{{loop_label}}:")
+                bool_result = self._traverse(node.children[2])
+                if bool_result:
+                    temp = self.new_temp()
+                    self.code_list.append(f"{{temp}} = not {{bool_result}}")
+                    self.code_list.append(f"if {{temp}} goto {{exit_label}}")
+                self._traverse(node.children[4])
+                self.code_list.append(f"goto {{loop_label}}")
+                self.code_list.append(f"{{exit_label}}:")
+            return None
+
+        # 8. IfStmt: IF ( BoolExpr ) Stmt
+        elif node.name == 'IfStmt':
+            if len(node.children) >= 5:
+                exit_label = self.new_label()
+                bool_result = self._traverse(node.children[2])
+                if bool_result:
+                    temp = self.new_temp()
+                    self.code_list.append(f"{{temp}} = not {{bool_result}}")
+                    self.code_list.append(f"if {{temp}} goto {{exit_label}}")
+                self._traverse(node.children[4])
+                self.code_list.append(f"{{exit_label}}:")
+            return None
+
+        # 9. Block: LBRACE StmtList RBRACE
+        elif node.name == 'Block':
+            if len(node.children) >= 2:
+                self._traverse(node.children[1])
+            return None
+
+        # 10. BoolExpr: Expr RelOp Expr
+        elif node.name == 'BoolExpr':
+            if len(node.children) >= 3:
+                e1 = self._traverse(node.children[0])
+                op = self._traverse(node.children[1])
+                e2 = self._traverse(node.children[2])
+                if e1 and op and e2:
+                    temp = self.new_temp()
+                    self.code_list.append(f"{{temp}} = {{e1}} {{op}} {{e2}}")
+                    return temp
+            return None
+
+        # 11. RelOp
+        elif node.name == 'RelOp':
+            if node.children:
+                return self._traverse(node.children[0])
+            return None
+
+        # 12. 变量声明(忽略)
+        elif node.name in ['VarDecl', 'IDList', 'DeclList', 'DeclListTail', 'IDListTail']:
+            return None
+
+        # 13. 因子处理 (Factor)
         elif node.name == 'Factor':
+            if not node.children:
+                return None
             if node.children[0].name == "'LPAREN'":
                 return self._traverse(node.children[1])
             return self._traverse(node.children[0])
 
-        # 5. 终端节点
+        # 14. 终端节点
         if node.token:
             return node.token.value
 
@@ -320,20 +418,40 @@ class CodeGenerator:
         if not tail_node or not tail_node.children:
             return left_val
 
-        # 提取操作符和右操作数
-        # 结构通常为: [AddOp/MulOp, FurtherTail]
-        op_group = tail_node.children[0]
+        first_child = tail_node.children[0]
+        
+        # 情况1: PL/0格式 - ExprTail -> 'PLUS' Term ExprTail
+        # 第一个子节点直接是操作符终端节点
+        if first_child.token and first_child.token.value in ['+', '-', '*', '/']:
+            op_symbol = first_child.token.value
+            if len(tail_node.children) < 2:
+                return left_val
+            right_val = self._traverse(tail_node.children[1])
+            target = self.new_temp()
+            self.code_list.append(f"{{target}} = {{left_val}} {{op_symbol}} {{right_val}}")
+            if len(tail_node.children) > 2:
+                return self._handle_tail_recursive(tail_node.children[2], target)
+            return target
+        
+        # 情况2: simple_expr格式 - Expr_LF_TAIL -> AddOp Term ...
+        # 第一个子节点是AddOp/MulOp组节点
+        op_group = first_child
+        if not op_group.children:
+            return left_val
 
-        # 从 AddOp/MulOp 中提取具体的符号和对应的 Term/Factor
-        op_symbol = op_group.children[0].token.value
+        op_node = op_group.children[0]
+        if not op_node.token:
+            return left_val
+        op_symbol = op_node.token.value
+        
+        if len(op_group.children) < 2:
+            return left_val
         right_operand_node = op_group.children[1]
         right_val = self._traverse(right_operand_node)
 
-        # 生成 TAC
         target = self.new_temp()
         self.code_list.append(f"{{target}} = {{left_val}} {{op_symbol}} {{right_val}}")
 
-        # 递归处理后续的 Tail
         if len(op_group.children) > 2:
             return self._handle_tail_recursive(op_group.children[2], target)
         if len(tail_node.children) > 1:
