@@ -13,6 +13,7 @@ Algorithm flow:
 
 from typing import List, Tuple, Dict, Set, Optional
 from dataclasses import dataclass
+from collections import defaultdict
 
 
 # ============================================================================
@@ -445,17 +446,140 @@ def nfa_to_dfa(start_state: NFAState) -> Tuple[DFAState, List[DFAState], Set[str
     return start_dfa, dfa_list, alphabet
 
 
+def _collect_reachable_dfa_states(start: DFAState) -> List[DFAState]:
+    """Collect all reachable DFA states from start (BFS)."""
+    q = [start]
+    seen = {start}
+    res = []
+    while q:
+        s = q.pop()
+        res.append(s)
+        for nxt in s.trans.values():
+            if nxt not in seen:
+                seen.add(nxt)
+                q.append(nxt)
+    return res
+
+
+def minimize_dfa(start: DFAState, alphabet: Set[str]) -> Tuple[DFAState, List[DFAState]]:
+    """
+    DFA minimization via partition refinement (equivalence state merging).
+    Works with partial DFA transitions (missing transition treated as None).
+
+    Equivalence constraints:
+      - Accepting states can only be merged if (token_type, priority) are identical.
+      - Non-accepting states can be merged together.
+      - Transition structure w.r.t alphabet must be equivalent under current partition.
+    """
+    states = _collect_reachable_dfa_states(start)
+    if not states:
+        return start, [start]
+
+    # Deterministic ordering for stable results
+    states = sorted(states, key=lambda s: s.id)
+
+    # Initial partition by acceptance signature
+    # IMPORTANT: token_type/priority must be part of signature to preserve rule priority.
+    def acc_sig(s: DFAState):
+        if not s.is_accept:
+            return (False, None, None)
+        return (True, s.token_type, s.priority)
+
+    blocks: List[List[DFAState]] = []
+    sig2block = defaultdict(list)
+    for s in states:
+        sig2block[acc_sig(s)].append(s)
+    # stable block ordering (by smallest old id)
+    blocks = sorted(sig2block.values(), key=lambda b: min(x.id for x in b))
+
+    # Map state -> block index
+    state2block: Dict[DFAState, int] = {}
+    for i, b in enumerate(blocks):
+        for s in b:
+            state2block[s] = i
+
+    # Refinement loop: split blocks until stable
+    alpha_sorted = sorted(alphabet)
+
+    changed = True
+    while changed:
+        changed = False
+        new_blocks: List[List[DFAState]] = []
+
+        for block in blocks:
+            # group states in this block by "transition signature" under current partition
+            groups: Dict[Tuple, List[DFAState]] = defaultdict(list)
+
+            for s in block:
+                # Signature: acceptance sig + target block for each symbol (or None if no transition)
+                trans_sig = []
+                for sym in alpha_sorted:
+                    tgt = s.trans.get(sym)
+                    trans_sig.append(state2block.get(tgt) if tgt is not None else None)
+                key = (acc_sig(s), tuple(trans_sig))
+                groups[key].append(s)
+
+            if len(groups) == 1:
+                # no split
+                new_blocks.append(block)
+            else:
+                changed = True
+                # stable ordering of split blocks
+                split_blocks = sorted(groups.values(), key=lambda b: min(x.id for x in b))
+                new_blocks.extend(split_blocks)
+
+        blocks = new_blocks
+        state2block.clear()
+        for i, b in enumerate(blocks):
+            for s in b:
+                state2block[s] = i
+
+    # Build minimized DFA
+    # Create one new state per block; union nfa_states for bookkeeping (optional)
+    block_reps = [min(b, key=lambda s: s.id) for b in blocks]  # representative for transitions
+    new_states: List[DFAState] = []
+
+    block2new: Dict[int, DFAState] = {}
+    for bi, block in enumerate(blocks):
+        # union NFA states (purely for debug; scanner doesn't rely on it)
+        union_nfa = set()
+        for s in block:
+            union_nfa.update(s.nfa_states)
+        ns = DFAState(union_nfa)
+
+        # acceptance info identical within block by construction
+        rep = block_reps[bi]
+        ns.is_accept = rep.is_accept
+        ns.token_type = rep.token_type
+        ns.priority = rep.priority
+
+        block2new[bi] = ns
+        new_states.append(ns)
+
+    # Fill transitions in minimized DFA using representative transitions
+    for bi, rep in enumerate(block_reps):
+        ns = block2new[bi]
+        for sym, tgt in rep.trans.items():
+            ns.trans[sym] = block2new[state2block[tgt]]
+
+    new_start = block2new[state2block[start]]
+
+    # Optional: stable ordering of new_states (by their creation order already stable)
+    return new_start, new_states
+
+
 class LexerGenerator:
     """Lexer generator class
     
-    Automatically generates lexer using Thompson's construction and subset construction algorithms.
-    Compiles multiple regular expression rules into an efficient DFA scanner.
+    Automatically generates lexer using Thompson's construction, subset construction, and DFA minimization algorithms.
+    Compiles multiple regular expression rules into an efficient minimal DFA scanner.
     
     Algorithm flow:
     1. Regular expression → AST (RegexParser)
     2. AST → NFA (Thompson's construction)
     3. NFA → DFA (Subset construction)
-    4. DFA longest match scanning
+    4. DFA → Minimal DFA (DFA minimization via partition refinement)
+    5. DFA longest match scanning
     """
 
     def __init__(self):
@@ -491,7 +615,7 @@ class LexerGenerator:
         self.token_specs.append((token_type, regex_pattern))
 
     def build(self) -> None:
-        """Compile all lexical rules, generate DFA using Thompson's construction and subset construction
+        """Compile all lexical rules, generate minimal DFA using Thompson's construction, subset construction, and DFA minimization
         
         Returns:
             None
@@ -502,9 +626,11 @@ class LexerGenerator:
             1. Build NFA for each rule (using Thompson's construction)
             2. Merge all NFAs into a global NFA
             3. Convert NFA to DFA using subset construction
+            4. Minimize DFA using partition refinement algorithm
             
         Optimization:
             - Skip rebuilding if rules haven't changed and already built
+            - DFA minimization reduces the number of states for efficient scanning
         """
         if not self.token_specs:
             raise RuntimeError("No token rules added. Call add_token_rule() first.")
@@ -537,6 +663,11 @@ class LexerGenerator:
         
         # 5. Subset construction: NFA → DFA
         self.start_dfa, dfa_list, self.alphabet = nfa_to_dfa(global_start)
+        
+        # 6. DFA minimization: merge equivalent states
+        self.start_dfa, minimized_states = minimize_dfa(self.start_dfa, self.alphabet)
+        # (optional) if you want to inspect size:
+        # print(f"DFA states before: {len(dfa_list)}, after minimization: {len(minimized_states)}")
         
         # Compatibility attribute: for backward compatibility with test code
         self.compiled_patterns = [(token_type, pattern) for token_type, pattern in self.token_specs]
