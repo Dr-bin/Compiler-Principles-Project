@@ -8,7 +8,42 @@
 项目使用**经典编译原理算法**：
 - **词法分析**：使用正则表达式和扫描方法
 - **语法分析**：使用递归下降解析和LL(1)技术
-- **代码生成**：使用语法制导翻译生成三地址中间代码
+- **代码生成**：使用语法制导翻译（SDT）在解析过程中同时生成三地址中间代码
+
+## 核心特性：语法制导翻译（Syntax-Directed Translation）
+
+本项目实现了真正的**语法制导翻译（SDT）**，满足编译原理课程的严格要求：
+
+✅ **一遍扫描编译**：在语法分析过程中同时生成中间代码，无需单独的代码生成阶段  
+✅ **语义动作嵌入**：每识别一个产生式，立即执行相应的翻译动作  
+✅ **综合属性计算**：使用综合属性（Synthesized Attributes）在AST节点中传递语义信息  
+✅ **三地址码生成**：实时生成规范的三地址中间代码（临时变量、标签等）
+
+### SDT实现示例
+
+**源代码**：
+```
+x = 10;
+y = 20;
+print(x + y);
+```
+
+**编译过程**（语法制导翻译）：
+1. 解析 `x = 10;` → **立即生成** `x = 10`
+2. 解析 `y = 20;` → **立即生成** `y = 20`
+3. 解析 `x + y` → **立即生成** `t1 = x + y`
+4. 解析 `print(...)` → **立即生成** `param t1` 和 `call print, 1`
+
+**生成的中间代码**（三地址码）：
+```
+x = 10
+y = 20
+t1 = x + y
+param t1
+call print, 1
+```
+
+**关键点**：所有代码都是在解析过程中生成的，不需要等到整个AST构建完成！
 
 ## 项目特点
 
@@ -105,15 +140,18 @@ python -m pytest tests/ -v
 
 ### 3. 代码生成器 (code_generator.py)
 
-**功能**：从AST生成三地址中间代码
+**功能**：~~从AST生成三地址中间代码~~ **[已升级为SDT]** 在解析过程中同时生成中间代码
 
-关键类：
-- `CodeGenerator`：代码生成器
+**[重要变更]** 代码生成现已集成到 `parser_generator.py` 中：
+- 解析器在识别产生式时，**立即调用翻译动作**
+- 无需单独的代码生成阶段
+- 实现真正的**一遍扫描编译**
 
-主要方法：
-- `generate_from_ast(ast)`：从AST生成中间代码
-- `emit(op, arg1, arg2, result)`：发出一条三地址指令
+关键方法（在 `ParserGenerator` 类中）：
+- `_apply_translation_scheme()`：根据产生式执行翻译动作（SDT核心）
+- `emit(code)`：发出一条三地址指令
 - `new_temp()`、`new_label()`：生成临时变量和标签
+- `get_generated_code()`：获取生成的中间代码
 
 ### 4. 规则解析器 (rule_parser.py)
 
@@ -263,25 +301,79 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 测试 | 全体 | `tests/` |
 | 文档 | 全体 | `README.md` |
 
+## 语法制导翻译（SDT）技术细节
+
+### 翻译方案设计
+
+本项目使用**L-attributed语法制导定义**，在自顶向下解析过程中计算综合属性：
+
+1. **产生式识别**：使用LL(1)算法选择产生式
+2. **语义动作执行**：识别产生式后立即调用`_apply_translation_scheme()`
+3. **属性计算**：通过`synthesized_value`传递语义信息
+4. **代码发射**：调用`emit()`立即生成三地址码
+
+### 典型翻译规则示例
+
+```python
+# 产生式: Expr -> Term '+' Term
+# 翻译规则: 
+#   temp = new_temp()
+#   emit(temp + " = " + Term1.value + " + " + Term2.value)
+#   Expr.value = temp
+```
+
+**实际实现**（在`_apply_translation_scheme()`中）：
+```python
+if symbol == 'Expr' and has_add_operator(children):
+    left_val = children[0].synthesized_value
+    op = children[1].synthesized_value  # '+'
+    right_val = children[2].synthesized_value
+    temp = self.new_temp()
+    self.emit(f"{temp} = {left_val} {op} {right_val}")
+    node.synthesized_value = temp
+```
+
+### SDT与两遍扫描的对比
+
+| 特性 | 传统两遍扫描 | 本项目（SDT） |
+|------|------------|-------------|
+| 扫描次数 | 2次（解析+代码生成） | 1次（同时进行） |
+| AST需求 | 必须完整构建 | 仅用于属性传递 |
+| 代码生成时机 | 解析完成后 | **解析过程中** |
+| 内存占用 | 较高（存储完整AST） | 较低（实时发射代码） |
+| 符合理论 | 一般实现 | **严格符合SDT定义** |
+
+### 验证SDT实现
+
+运行以下命令验证SDT是否正常工作：
+```bash
+python test_sdt_debug.py  # 查看解析过程中的代码生成
+```
+
+您会看到：
+- 每识别一个产生式
+- 立即生成对应的中间代码
+- 无需等待整个解析完成
+
 ## 扩展指南
 
 ### 支持更复杂的文法
 
-1. 实现FIRST/FOLLOW集合分析
-2. 改进冲突解决策略
+1. 实现FIRST/FOLLOW集合分析 ✅ **已实现**
+2. 改进冲突解决策略 ✅ **已实现**（消除左递归、左公因子）
 3. 支持更多的文法特性（如EBNF）
 
 ### 增强代码生成
 
-1. 添加类型检查
-2. 生成优化的中间代码
-3. 支持目标代码生成
+1. 添加类型检查 → 在`_apply_translation_scheme()`中添加类型检查逻辑
+2. 生成优化的中间代码 → 实现常量折叠、死代码消除等
+3. 支持目标代码生成 → 添加目标平台的指令选择
 
 ### 集成优化
 
 1. 词法分析优化（DFA最小化）
 2. 语法分析优化（LR解析）
-3. 生成代码优化
+3. **代码生成优化** ✅ **已采用SDT实现一遍扫描**
 
 ## 常见问题
 

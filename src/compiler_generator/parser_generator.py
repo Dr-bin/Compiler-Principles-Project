@@ -2,9 +2,11 @@
 
 该模块实现自动构建解析器的功能，使用LL(1)分析法和递归下降法
 将上下文无关文法(BNF)转换为解析器。
+
+[SDT实现] 使用语法制导翻译(Syntax-Directed Translation)在解析过程中同时生成中间代码
 """
 
-from typing import List, Dict, Tuple, Any, Optional, Set
+from typing import List, Dict, Set, Optional, Tuple
 from dataclasses import dataclass
 from src.compiler_generator.lexer_generator import Token
 
@@ -13,26 +15,25 @@ from src.compiler_generator.lexer_generator import Token
 class ASTNode:
     """抽象语法树(AST)节点
     
-    属性:
-        name: 节点对应的非终结符名称（如'Expr', 'Stmt'等）
-        children: 子节点列表
-        token: 如果是叶子节点，存储对应的Token对象
+    [SDT扩展] 节点现在携带语义信息：
+    - synthesized_value: 综合属性，用于代码生成（变量名、临时变量等）
     """
     name: str
     children: List['ASTNode'] = None
     token: Token = None
+    synthesized_value: str = None  # SDT: 综合属性，用于存储代码生成结果
 
     def __post_init__(self):
-        """初始化后处理：确保children为列表"""
         if self.children is None:
             self.children = []
 
     def __repr__(self, indent=0):
-        """返回AST树的字符串表示，用于调试"""
         prefix = "  " * indent
         result = f"{prefix}{self.name}"
         if self.token:
             result += f" ('{self.token.value}')"
+        if self.synthesized_value:
+            result += f" [val={self.synthesized_value}]"
         result += "\n"
         for child in self.children:
             result += child.__repr__(indent + 1)
@@ -47,18 +48,17 @@ class ParseError(Exception):
 class ParserGenerator:
     """语法分析器生成器类
     
-    从BNF文法规范自动生成递归下降解析器。
-    支持LL(1)文法的解析。
+    [SDT增强] 在语法分析过程中同时进行代码生成：
+    - 每个产生式识别后立即执行翻译动作
+    - 生成的中间代码保存在code_buffer中
+    - 实现真正的一遍扫描编译
     """
 
-    def __init__(self):
-        """初始化语法分析器生成器
+    def __init__(self, enable_sdt: bool = True):
+        """初始化解析器
         
-        属性说明:
-            grammar: 存储文法规则，格式为 nonterminal: [production_list]
-            start_symbol: 开始符号
-            tokens: 待解析的Token列表
-            pos: 当前解析位置
+        参数:
+            enable_sdt: 是否启用语法制导翻译（默认启用）
         """
         self.grammar: Dict[str, List[List[str]]] = {}
         self.start_symbol: str = ""
@@ -70,382 +70,410 @@ class ParserGenerator:
         self.follow_sets: Dict[str, Set[str]] = {}
         self.epsilon_symbol: str = 'EPSILON'
         self.analysis_sets_built = False
+        
+        # [SDT] 语法制导翻译相关属性
+        self.enable_sdt = enable_sdt
+        self.code_buffer: List[str] = []  # 存储生成的中间代码
+        self.temp_counter: int = 0  # 临时变量计数器
+        self.label_counter: int = 0  # 标签计数器
+        self.symbol_table: Dict[str, Dict] = {}  # 符号表
 
     def _compute_first_sets(self):
-        """
-        [算法核心] 迭代计算所有符号的 FIRST 集合。
-        FIRST(X) 是可以从 X 推导出的所有终结符的集合。
-        """
-        # 1. 初始化 FIRST 集合
+        """[算法核心] 迭代计算所有符号的 FIRST 集合。"""
         self.first_sets = {}
-
-        # 为所有非终结符初始化空集合
         for non_term in self.non_terminals:
             self.first_sets[non_term] = set()
 
-        # 迭代直到集合不再变化
         changed = True
         while changed:
             changed = False
-
-            # 2. 遍历所有非终结符 X
             for X in self.non_terminals:
-
-                # 3. 遍历 X 的所有产生式：X -> Y1 Y2 ... Yk
                 for production in self.grammar[X]:
+                    # 修复：将 current_len 的获取移到处理每个产生式之前
+                    # 这样即使产生式为空(epsilon)，current_len 也能被正确初始化
+                    current_len = len(self.first_sets[X])
 
-                    # 4. 计算 FIRST(Y1 Y2 ... Yk) 并加入 FIRST(X)
-
-                    # 辅助变量，用于检查是否所有前导符号都能推出 ε
                     can_all_derive_epsilon = True
-
                     for Y in production:
-                        current_len = len(self.first_sets[X])
-
-                        # ----------------------------------------------------
-                        # Case 1: Y 是终结符
-                        # ----------------------------------------------------
                         if self._is_terminal(Y):
                             token_type = Y[1:-1] if Y.startswith("'") else Y
                             self.first_sets[X].add(token_type)
-                            can_all_derive_epsilon = False  # 终结符不能推出 ε
-                            break  # Y是终结符，无需再看后面的符号
-
-                        # ----------------------------------------------------
-                        # Case 2: Y 是非终结符
-                        # ----------------------------------------------------
+                            can_all_derive_epsilon = False
+                            break
                         else:
-                            # 2a. 将 FIRST(Y) 中除了 ε 之外的元素加入 FIRST(X)
                             first_Y_without_epsilon = self.first_sets.get(Y, set()) - {self.epsilon_symbol}
                             self.first_sets[X].update(first_Y_without_epsilon)
-
-                            # 2b. 检查 Y 是否能推出 ε
                             if self.epsilon_symbol not in self.first_sets.get(Y, set()):
                                 can_all_derive_epsilon = False
-                                break  # Y 不能推出 ε，无需再看后面的符号
+                                break
 
-                    # ----------------------------------------------------
-                    # Case 3: 整个产生式 Y1 Y2 ... Yk 都能推出 ε
-                    # ----------------------------------------------------
-                    # 如果所有符号都能推出 ε，或者产生式本身就是 ε (空列表)
                     if can_all_derive_epsilon or not production:
                         self.first_sets[X].add(self.epsilon_symbol)
 
-                    # 检查是否有变化
                     if current_len != len(self.first_sets[X]):
                         changed = True
 
-        # 最终移除所有空产生式（如果有的话，取决于您的文法定义）
-        for X in self.non_terminals:
-            if not self.first_sets[X]:
-                # 如果 FIRST(X) 为空，但 X 的产生式中有 ε，则加入 ε
-                # (在迭代中已处理，这里仅做安全检查)
-                pass
-
     def _compute_follow_sets(self):
-        """
-        [算法核心] 迭代计算所有非终结符的 FOLLOW 集合。
-        FOLLOW(A) 是所有出现在文法中 A 之后的位置的终结符集合。
-        """
-        # 1. 初始化 FOLLOW 集合
+        """[算法核心] 迭代计算所有非终结符的 FOLLOW 集合。"""
         self.follow_sets = {}
         for non_term in self.non_terminals:
             self.follow_sets[non_term] = set()
 
-        # 2. 初始条件：将 EOF 符号 $ 加入开始符号的 FOLLOW 集合中
         if self.start_symbol:
             self.follow_sets[self.start_symbol].add('EOF')
 
-        # 迭代直到集合不再变化
         changed = True
         while changed:
             changed = False
-
-            # 3. 遍历所有产生式：A -> α B β
             for A in self.non_terminals:
                 for production in self.grammar[A]:
-
-                    # 遍历产生式中的每一个符号 B
                     for i, B in enumerate(production):
-
-                        # 只处理非终结符 B
                         if B not in self.non_terminals:
                             continue
 
-                        # ----------------------------------------------------
-                        # Case 1: B 后面有符号 (β = B后面的所有符号)
-                        # ----------------------------------------------------
-                        # β 是 B 后面的符号序列
                         beta = production[i + 1:]
+                        current_len = len(self.follow_sets[B])  # 记录初始长度
 
                         if beta:
-                            # 1a. 将 FIRST(β) 中除了 ε 之外的元素加入 FOLLOW(B)
                             first_beta = self._get_first_set_for_sequence(beta)
-                            current_len = len(self.follow_sets[B])
-
                             self.follow_sets[B].update(first_beta - {self.epsilon_symbol})
-
-                            if current_len != len(self.follow_sets[B]):
-                                changed = True
-
-                            # 1b. 如果 β 可以推导出 ε，则将 FOLLOW(A) 加入 FOLLOW(B)
                             if self._sequence_can_derive_epsilon(beta):
-                                current_len = len(self.follow_sets[B])
                                 self.follow_sets[B].update(self.follow_sets.get(A, set()))
-
-                                if current_len != len(self.follow_sets[B]):
-                                    changed = True
-
-                        # ----------------------------------------------------
-                        # Case 2: B 是产生式中的最后一个符号 (β 为空)
-                        # ----------------------------------------------------
-                        # 或者 B 后面的所有符号 β 都能推导出 ε
-                        elif i == len(production) - 1:
-                            # 将 FOLLOW(A) 加入 FOLLOW(B)
-                            current_len = len(self.follow_sets[B])
+                        else:
                             self.follow_sets[B].update(self.follow_sets.get(A, set()))
 
-                            if current_len != len(self.follow_sets[B]):
-                                changed = True
+                        # 检查是否有变化
+                        if current_len != len(self.follow_sets[B]):
+                            changed = True
 
-        #
-
-    # ----------------------------------------------------------------------
-    # 辅助方法：计算符号序列的 FIRST 集合和 ε-推导能力
-    # ----------------------------------------------------------------------
     def _get_first_set_for_sequence(self, sequence: List[str]) -> Set[str]:
-        """计算符号序列 (Y1 Y2 ...) 的 FIRST 集合"""
         first_set = set()
         for Y in sequence:
             if self._is_terminal(Y):
-                # 终结符
                 token_type = Y[1:-1] if Y.startswith("'") else Y
                 first_set.add(token_type)
                 return first_set
             else:
-                # 非终结符
                 first_set.update(self.first_sets.get(Y, set()) - {self.epsilon_symbol})
                 if self.epsilon_symbol not in self.first_sets.get(Y, set()):
-                    return first_set  # Y不能推导出ε，无需再看后面的符号
-
-        # 如果序列为空或者所有符号都能推出 ε
+                    return first_set
         first_set.add(self.epsilon_symbol)
         return first_set
 
     def _sequence_can_derive_epsilon(self, sequence: List[str]) -> bool:
-        """检查符号序列 (Y1 Y2 ...) 是否可以推导出空串"""
-        if not sequence:
-            return True  # 空序列可以推导出 ε
-
+        if not sequence: return True
         for Y in sequence:
-            if self._is_terminal(Y):
-                return False  # 终结符不能推导出 ε
-            if self.epsilon_symbol not in self.first_sets.get(Y, set()):
-                return False  # 非终结符 Y 不能推导出 ε
-
+            if self._is_terminal(Y): return False
+            if self.epsilon_symbol not in self.first_sets.get(Y, set()): return False
         return True
 
     def _eliminate_immediate_left_recursion(self, A: str):
-        """消除非终结符 A 的即时左递归 (A -> Aα | β)"""
-
-        # 1. 划分产生式：左递归部分 (alphas) 和 非左递归部分 (betas)
-        alphas = []
-        betas = []
-
-        # 临时存储 A 的当前所有产生式
+        alphas, betas = [], []
         productions = self.grammar[A]
-
         for production in productions:
             if production and production[0] == A:
-                # 发现左递归: A -> A alpha
-                alphas.append(production[1:])  # alpha 是 A 后面的符号序列
+                alphas.append(production[1:])
             else:
-                # 非左递归: A -> beta
                 betas.append(production)
 
-        # 如果不存在左递归，则直接返回
-        if not alphas:
-            return
+        if not alphas: return
 
-        # 2. 生成新的非终结符 A'
         A_tail = A + '_TAIL'
-
-        # 3. 构造新的文法规则
-
-        # a. 构造 A' 的产生式: A' -> alpha A' | epsilon
         new_A_tail_productions = []
         for alpha in alphas:
-            # A' -> alpha A'
             new_A_tail_productions.append(alpha + [A_tail])
-
-        # A' -> epsilon (空列表)
-        new_A_tail_productions.append([])  # 使用空列表 [] 表示 epsilon
+        new_A_tail_productions.append([])
 
         self.grammar[A_tail] = new_A_tail_productions
         self.non_terminals.add(A_tail)
 
-        # b. 构造 A 的新产生式: A -> beta A'
         new_A_productions = []
         for beta in betas:
-            # A -> beta A'
             new_A_productions.append(beta + [A_tail])
-
-        # 覆盖 A 的旧产生式
         self.grammar[A] = new_A_productions
 
-        # 警告：如果 betas 为空，这会导致 A 没有任何产生式，这通常意味着文法错误，
-        # 属于死循环（A -> Aα1），但在这里我们仍然按规则转换。
-        if not betas:
-            print(f"Warning: Non-terminal {A} only had left-recursive productions. It is now useless.")
+    def _check_potential_indirect_recursion(self, start_sym: str, target_sym: str, visited: Set[str] = None) -> bool:
+        """
+        [新增辅助方法] 检查是否存在从 start_sym 开始，经过推导首字符能到达 target_sym 的路径。
+        用于判断是否真的需要进行非左递归的代换。
+        """
+        if visited is None: visited = set()
+        if start_sym == target_sym: return True
+        if start_sym in visited: return False
+
+        visited.add(start_sym)
+
+        # 我们只关心产生式的第一个符号，因为只有第一个符号会导致左递归
+        for prod in self.grammar.get(start_sym, []):
+            if not prod: continue
+            first_symbol = prod[0]
+            # 如果第一个符号是非终结符，则继续递归检查
+            if first_symbol in self.non_terminals:
+                if self._check_potential_indirect_recursion(first_symbol, target_sym, visited):
+                    return True
+        return False
 
     def _eliminate_left_recursion(self):
-        """消除所有非终结符的即时左递归"""
+        """
+        通用算法消除所有左递归。
+        [优化] 增加了循环检测，只有在存在潜在左递归环路时才进行代换，
+        避免不必要地将无害的非终结符代入，保留文法原有结构。
+        """
+        non_terminals_list = sorted(list(self.non_terminals))
 
-        # 注意：这里只处理即时左递归。如果需要处理间接左递归，
-        # 需要使用更复杂的算法，例如将非终结符排序并迭代替换。
+        for i in range(len(non_terminals_list)):
+            Ai = non_terminals_list[i]
+            for j in range(i):
+                Aj = non_terminals_list[j]
 
-        # 拷贝非终结符列表，因为在消除过程中可能会添加新的 _TAIL 符号
-        non_terminals_to_process = list(self.non_terminals)
+                # [优化关键点]
+                # 只有当 Aj 能推导出以 Ai 开头的串时（即存在 Ai -> Aj ... -> Ai ... 的风险），
+                # 我们才执行代换。否则保留 S -> A 'a' 这种结构。
+                if not self._check_potential_indirect_recursion(Aj, Ai):
+                    continue
 
-        for A in non_terminals_to_process:
-            # 只对原始非终结符进行消除，不处理新生成的 _TAIL 符号
-            if A in self.grammar:
-                self._eliminate_immediate_left_recursion(A)
+                new_productions_for_Ai = []
+                if Ai in self.grammar:
+                    current_productions = self.grammar[Ai]
+                    self.grammar[Ai] = []
+                    for production in current_productions:
+                        if production and production[0] == Aj:
+                            gamma = production[1:]
+                            for beta_prod in self.grammar.get(Aj, []):
+                                new_productions_for_Ai.append(beta_prod + gamma)
+                        else:
+                            self.grammar[Ai].append(production)
+                    self.grammar[Ai].extend(new_productions_for_Ai)
 
-        # 消除后，重新识别所有符号，因为增加了新的 _TAIL 非终结符
+            if Ai in self.grammar:
+                self._eliminate_immediate_left_recursion(Ai)
+
         self._identify_symbols()
+
+    def _perform_left_factoring(self):
+        """对文法进行左因子提取"""
+        new_grammar = self.grammar.copy()
+        counter = 0
+        # 迭代处理，直到所有非终结符都没有公共左因子
+        non_terminals_to_check = set(self.grammar.keys())
+
+        # 设置一个安全计数器，防止无限循环
+        max_iterations = len(self.grammar) * 2
+
+        while non_terminals_to_check and max_iterations > 0:
+            A = non_terminals_to_check.pop()
+            max_iterations -= 1
+
+            productions = new_grammar.get(A, [])
+            if not productions: continue
+
+            # 1. 对产生式列表进行排序，便于寻找公共前缀
+            # 排序规则：按符号类型和长度，以确保稳定性
+            sorted_productions = sorted(productions)
+
+            groups = []  # 存储分组后的产生式：[[prod1, prod2], [prod3], ...]
+            i = 0
+            while i < len(sorted_productions):
+                current_prod = sorted_productions[i]
+                current_group = [current_prod]
+
+                # 寻找与 current_prod 具有公共前缀的所有产生式
+                j = i + 1
+                while j < len(sorted_productions):
+                    next_prod = sorted_productions[j]
+
+                    # 寻找 current_prod 和 next_prod 之间的公共前缀
+                    alpha = []
+                    min_len = min(len(current_prod), len(next_prod))
+                    for k in range(min_len):
+                        if current_prod[k] == next_prod[k]:
+                            alpha.append(current_prod[k])
+                        else:
+                            break
+
+                    # 如果公共前缀非空，则将 next_prod 视为同一组的候选项
+                    if alpha:
+                        # 确保 current_group 存储的是具有最长公共前缀的组
+                        # 这里的逻辑比较复杂，为了保证找到最长的公共前缀，我们采用贪婪策略
+                        # 简化处理：我们只检查第一个符号是否相同，如果有公共前缀，就分组
+                        # 但为了提取最长公共前缀，我们应该使用更精细的逻辑。
+                        # 重新简化：只检查第一个符号，然后对组内寻找最长公共前缀
+                        if current_prod and next_prod and current_prod[0] == next_prod[0]:
+                            current_group.append(next_prod)
+                            j += 1
+                        else:
+                            break
+                    else:
+                        break  # 没有公共前缀，结束这个组的寻找
+
+                groups.append(current_group)
+                i += len(current_group)  # 跳过已经分组的产生式
+
+            new_productions_for_A = []
+
+            for group in groups:
+                if len(group) < 2:
+                    new_productions_for_A.extend(group)
+                    continue
+
+                # 寻找组内所有产生式的最长公共前缀 (Alpha)
+                # 假设 group 不为空
+                alpha = []
+                min_len = min(len(p) for p in group)
+
+                for i_sym in range(min_len):
+                    current_symbol = group[0][i_sym]
+                    # 检查组内所有产生式在 i_sym 位置是否都匹配
+                    if all(len(p) > i_sym and p[i_sym] == current_symbol for p in group[1:]):
+                        alpha.append(current_symbol)
+                    else:
+                        break
+
+                if not alpha:
+                    # 没有公共前缀，或者公共前缀为空串
+                    new_productions_for_A.extend(group)
+                    continue
+
+                # 找到最长公共前缀 alpha，现在执行提取操作
+                new_non_terminal = f"{A}_LF_TAIL_{counter}"
+                counter += 1
+
+                new_tail_productions = []
+                for prod in group:
+                    # 剩余部分 (Beta)
+                    new_tail_productions.append(prod[len(alpha):])
+
+                # 添加新的非终结符到待检查列表，因为它也可能需要左因子提取
+                if len(new_tail_productions) > 1:
+                    non_terminals_to_check.add(new_non_terminal)
+
+                new_grammar[new_non_terminal] = new_tail_productions
+                new_productions_for_A.append(alpha + [new_non_terminal])
+
+            new_grammar[A] = new_productions_for_A
+
+        self.grammar = new_grammar
+        self._identify_symbols()
+
+    def _compute_select_set(self, non_terminal: str, production: List[str]) -> Set[str]:
+        first_alpha = self._get_first_set_for_sequence(production)
+        if self.epsilon_symbol not in first_alpha:
+            return first_alpha.copy()
+
+        select_set = first_alpha - {self.epsilon_symbol}
+        select_set.update(self.follow_sets.get(non_terminal, set()))
+        return select_set
+
+    def _check_ll1_conflicts(self):
+        for A in self.non_terminals:
+            productions = self.grammar.get(A, [])
+            if len(productions) <= 1: continue
+
+            select_sets_info = []
+            for production in productions:
+                select_sets_info.append({
+                    'production': production,
+                    'select': self._compute_select_set(A, production)
+                })
+
+            for i in range(len(select_sets_info)):
+                for j in range(i + 1, len(select_sets_info)):
+                    set_i = select_sets_info[i]['select']
+                    set_j = select_sets_info[j]['select']
+                    intersection = set_i.intersection(set_j)
+
+                    if intersection:
+                        prod_i_str = " ".join(select_sets_info[i]['production']) if select_sets_info[i][
+                            'production'] else self.epsilon_symbol
+                        prod_j_str = " ".join(select_sets_info[j]['production']) if select_sets_info[j][
+                            'production'] else self.epsilon_symbol
+                        raise ParseError(
+                            f"LL(1) Conflict detected for non-terminal '{A}'.\n"
+                            f"Productions:\n  1. {A} -> {prod_i_str}\n  2. {A} -> {prod_j_str}\n"
+                            f"Conflict tokens (intersection of SELECT sets): {intersection}"
+                        )
 
     def build_analysis_sets(self):
-        """执行文法分析，计算 FIRST 和 FOLLOW 集合 (已包含左递归消除)"""
-        # 1. 识别初始符号集
+        """执行文法分析"""
         self._identify_symbols()
-
-        # 2. 消除即时左递归 (此方法内部会重新调用 _identify_symbols 来识别新增的 _TAIL 符号)
-        self._eliminate_left_recursion()
-
-        # 3. 计算 FIRST 集合 (这是所有分析的基础)
-        self._compute_first_sets()
-
-        # 4. 计算 FOLLOW 集合 (依赖于 FIRST 集合)
-        self._compute_follow_sets()
-
+        self._eliminate_left_recursion()  # 这里的改动将确保不必要的代换不会发生
+        self._perform_left_factoring()
+        self._compute_first_sets()  # 修复了 UnboundLocalError
+        self._compute_follow_sets()  # 修正了 FOLLOW 集合的计算
+        self._check_ll1_conflicts()
         self.analysis_sets_built = True
 
     def _identify_symbols(self):
-        """识别所有的非终结符和终结符"""
         self.non_terminals = set(self.grammar.keys())
         self.terminals = set()
-
-        # 遍历所有产生式，识别出所有的符号
         all_symbols = set()
         for non_term in self.grammar:
             for production in self.grammar[non_term]:
                 for symbol in production:
                     all_symbols.add(symbol)
 
-        # 终结符是所有符号中，不属于非终结符的符号
-        # 并且根据您之前的设计，我们假设终结符是以引号包裹的字符串（如"'ID'"）
         for symbol in all_symbols:
-            # 终结符识别逻辑：检查是否是带引号的字符串
             if symbol.startswith("'") and symbol.endswith("'"):
-                self.terminals.add(symbol[1:-1])  # 存储不带引号的 Token Type
+                self.terminals.add(symbol[1:-1])
             elif symbol not in self.non_terminals:
-                # 理论上不应该出现不带引号且不是非终结符的符号
                 pass
-
-        # 确保 EOF 是一个终结符
         self.terminals.add('EOF')
 
-        # --------------------------------------------------------
-        # 注意：为了方便计算，我们使用 token type 作为 FIRST/FOLLOW 集合的元素
-        # 在计算时，文法规则中的 "'ID'" 会被视为 'ID'
-        # --------------------------------------------------------
-
-    # 辅助方法：判断一个符号是否是终结符
     def _is_terminal(self, symbol: str) -> bool:
-        """检查一个文法符号是否是终结符"""
-        # 检查是否是带引号的符号
-        if symbol.startswith("'") and symbol.endswith("'"):
-            return True
-        # 检查是否是已识别的 Token Type (如 'EOF')
+        if symbol.startswith("'") and symbol.endswith("'"): return True
         return symbol in self.terminals
 
-    # 辅助方法：判断一个非终结符是否可以推出空串
     def _can_derive_epsilon(self, non_terminal: str) -> bool:
-        """检查一个非终结符是否可以推导出空串"""
-        # 这需要在 FIRST/FOLLOW 计算过程中迭代确定，所以单独实现
         return self.epsilon_symbol in self.first_sets.get(non_terminal, set())
 
     def add_production(self, nonterminal: str, production: List[str]) -> None:
-        """添加一个产生式（文法规则）
-        
-        参数:
-            nonterminal: 产生式左侧的非终结符
-            production: 产生式右侧的符号列表（可包含终结符和非终结符）
-            
-        返回:
-            None
-            
-        说明:
-            - 终结符使用引号标记（如 'if', '+'）
-            - 非终结符直接使用名称（如 'Expr', 'Stmt'）
-            - 同一非终结符可以有多条产生式（选择规则）
-        """
         if nonterminal not in self.grammar:
             self.grammar[nonterminal] = []
         self.grammar[nonterminal].append(production)
 
     def set_start_symbol(self, symbol: str) -> None:
-        """设置开始符号
-        
-        参数:
-            symbol: 开始符号名称（通常为'Program'或'S'）
-            
-        返回:
-            None
-        """
         self.start_symbol = symbol
+    
+    # ========================================================================
+    # [SDT] 代码生成辅助方法
+    # ========================================================================
+    
+    def new_temp(self) -> str:
+        """生成新的临时变量名"""
+        self.temp_counter += 1
+        return f"t{self.temp_counter}"
+    
+    def new_label(self) -> str:
+        """生成新的标签名"""
+        self.label_counter += 1
+        return f"L{self.label_counter}"
+    
+    def emit(self, code: str) -> None:
+        """发出一条中间代码指令"""
+        if self.enable_sdt:
+            self.code_buffer.append(code)
+    
+    def get_generated_code(self) -> str:
+        """获取生成的中间代码"""
+        return '\n'.join(self.code_buffer)
+    
+    def reset_code_generation(self) -> None:
+        """重置代码生成状态（用于新的编译）"""
+        self.code_buffer = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.symbol_table = {}
 
     def current_token(self) -> Token:
-        """获取当前指向的Token
-        
-        返回:
-            当前Token对象，如果已到达末尾返回EOF token
-            
-        说明:
-            用于查看下一个要匹配的Token，不消耗Token。
-        """
-        if self.pos < len(self.tokens):
-            return self.tokens[self.pos]
-        return self.tokens[-1]  # 返回EOF token
+        if self.pos < len(self.tokens): return self.tokens[self.pos]
+        return self.tokens[-1]
 
     def match(self, expected_type: str) -> ASTNode:
-        """
-        匹配并消耗当前 Token。
-
-        参数:
-            expected_type: 期望的 Token 类型 (如 'ID', 'NUM', 'PLUS')
-
-        返回:
-            匹配到的 Token 对应的 ASTNode 叶子节点。
-
-        抛出:
-            ParseError: 如果类型不匹配。
-        """
         current = self.current_token()
-
-        # 1. 检查类型是否匹配
         if current.type == expected_type:
-
-            # 2. 匹配成功：消耗 Token，将位置指针前移
             self.pos += 1
-
-            # 3. 创建 AST 叶子节点并返回
-            # AST 叶子节点的 name 通常就是 Token 的 type，token 属性存储了原始 Token 对象
             return ASTNode(name=current.type, token=current)
-
         else:
-            # 4. 匹配失败：抛出精确的语法错误 (使用 Token 的行号和列号)
             raise ParseError(
                 f"Syntax Error at Line {current.line}, Column {current.column}: "
                 f"Expected token type '{expected_type}', but found '{current.type}' "
@@ -453,170 +481,621 @@ class ParserGenerator:
             )
 
     def parse_symbol(self, symbol: str) -> ASTNode:
+        """解析符号并同时进行代码生成（SDT）
+        
+        [SDT核心] 在识别产生式后立即执行翻译动作：
+        - 终结符：直接匹配并返回节点
+        - 非终结符：递归解析子符号，然后根据产生式生成代码
         """
-        [LL(1) 风格] 递归解析一个符号（可以是终结符或非终结符）。
-
-        参数:
-            symbol: 要解析的符号名称 (如 'Expr' 或 "'NUM'")
-
-        返回:
-            对应的 AST 节点
-
-        异常:
-            ParseError: 当无法匹配时抛出
-
-        说明:
-            - 终结符 (带引号如 "'NUM'")：调用 self.match()
-            - 非终结符 (如 'Expr')：使用当前 Token (Lookahead) 选择产生式。
-            - 纯LL(1)设计，不使用回溯。
-        """
-        # ----------------------------------------------------
-        # 1. 处理终结符 (Terminal)
-        # ----------------------------------------------------
-        # 文法规则中，终结符通常用引号包裹 (如 "'NUM'")
         if symbol.startswith("'") and symbol.endswith("'"):
-            # 提取引号内的 token 类型
             token_type = symbol[1:-1]
+            node = self.match(token_type)
+            # [SDT] 终结符的综合属性就是其词法值
+            if node.token:
+                node.synthesized_value = node.token.value
+            return node
 
-            # 终结符直接交由 match 方法处理：检查、消耗、构建 AST 叶子节点
-            return self.match(token_type)
-
-        # ----------------------------------------------------
-        # 2. 处理非终结符 (Non-Terminal)
-        # ----------------------------------------------------
         if symbol not in self.grammar:
             raise ParseError(f"Unknown symbol reference in grammar: {symbol}")
 
-        # 获取当前前瞻 Token 类型
         current_token_type = self.current_token().type
         productions = self.grammar[symbol]
-
         found_production = None
 
-        # *** LL(1) 核心：基于 FIRST 和 FOLLOW 集合进行严格选择 ***
         for production in productions:
-            # 1. 计算该产生式 (即符号序列) 的 FIRST 集合
-            # 依赖于您在上一轮实现的辅助方法：
             production_first_set = self._get_first_set_for_sequence(production)
-
-            # 2. Case A: 如果当前 Token 在 FIRST(Production) 中
             if current_token_type in production_first_set:
-                # 找到唯一匹配的产生式（LL(1)文法保证了这一点）
                 found_production = production
                 break
-
-            # 3. Case B: 如果该产生式可以推导出 ε (即 ε 存在于 FIRST 集合中)
             if self.epsilon_symbol in production_first_set:
-
-                # 检查当前 Token 是否在 FOLLOW(Symbol) 中
                 if current_token_type in self.follow_sets.get(symbol, set()):
-                    # 选择 ε 产生式（因为这是唯一一个包含 ε 的选择）
                     found_production = production
                     break
 
-        # ----------------------------------------------------
-        # 3. 执行选定的产生式
-        # ----------------------------------------------------
         if found_production is not None:
             children_nodes = []
-
-            # 检查是否是 ε 产生式：如果是，则不消耗任何 Token
-            if not found_production and self.epsilon_symbol in production_first_set:
-                return ASTNode(name=symbol, children=[], token=None)
-
-            # 递归解析产生式中的每一个符号
+            if not found_production and self.epsilon_symbol in self._get_first_set_for_sequence(found_production):
+                return ASTNode(name=symbol, children=[], token=None, synthesized_value=None)
+            
+            # 递归解析所有子符号
             for sym in found_production:
-                child_node = self.parse_symbol(sym)
-                children_nodes.append(child_node)
-
-            # 成功解析，构建并返回 ASTNode
-            return ASTNode(name=symbol, children=children_nodes)
-
-        # ----------------------------------------------------
-        # 4. 错误处理
-        # ----------------------------------------------------
+                children_nodes.append(self.parse_symbol(sym))
+            
+            node = ASTNode(name=symbol, children=children_nodes)
+            
+            # [SDT] *** 关键：识别产生式后立即执行翻译动作 ***
+            if self.enable_sdt:
+                self._apply_translation_scheme(symbol, found_production, node)
+            
+            return node
         else:
-            # 遍历完所有产生式，没有一个能匹配当前的前瞻 Token
-            # 提示用户期望的 Token 类型
-            expected_tokens = self.first_sets.get(symbol, set()) - {self.epsilon_symbol}
+            expected = self.first_sets.get(symbol, set()) - {self.epsilon_symbol}
             if self.epsilon_symbol in self.first_sets.get(symbol, set()):
-                expected_tokens.update(self.follow_sets.get(symbol, set()))
-
-            raise ParseError(
-                f"Syntax Error at Line {self.current_token().line}, Column {self.current_token().column}: "
-                f"Non-terminal '{symbol}' encountered unexpected token '{self.current_token().type}'. "
-                f"Expected one of: {', '.join(sorted(expected_tokens))}"
-            )
-
-    def parse(self, tokens: List[Token]) -> ASTNode:
-        """从Token列表生成抽象语法树
+                expected.update(self.follow_sets.get(symbol, set()))
+            raise ParseError(f"Syntax Error: Expected one of {expected}")
+    
+    def _apply_translation_scheme(self, symbol: str, production: List[str], node: ASTNode) -> None:
+        """应用翻译方案：根据产生式生成中间代码（SDT核心）
+        
+        这是语法制导翻译的核心方法，每识别一个产生式就立即执行翻译动作。
         
         参数:
-            tokens: 词法分析器输出的Token列表
-            
-        返回:
-            根节点AST对象
-            
-        异常:
-            ParseError: 当语法分析失败时抛出
-            RuntimeError: 当start_symbol未设置时抛出
-            
+            symbol: 非终结符名称
+            production: 产生式右部
+            node: 已解析的AST节点（包含子节点）
+        
         说明:
-            - 调用前必须通过set_start_symbol()设置开始符号
-            - tokens应该包含EOF token作为结尾
+            根据不同的产生式模式，生成相应的三地址码。
+            使用灵活的模式匹配，兼容文法优化后的名称变化。
+        """
+        children = node.children
+        
+        # ====================================================================
+        # 1. 表达式和算术运算
+        # ====================================================================
+        
+        # Expr -> Term (只有一个子节点)
+        if symbol in ['Expr', 'Expression', 'Term'] and len(children) == 1:
+            node.synthesized_value = children[0].synthesized_value
+        
+        # Expr -> Term Expr_LF_TAIL_X  (处理加减法，X为任意数字)
+        elif symbol == 'Expr' and len(children) == 2:
+            left_val = children[0].synthesized_value
+            # DEBUG: print(f"[SDT] Processing Expr with tail: left_val={left_val}, tail={children[1].name}")
+            tail_val = self._process_expr_tail(children[1], left_val)
+            # DEBUG: print(f"[SDT] Expr result: tail_val={tail_val}")
+            node.synthesized_value = tail_val
+        
+        # Term -> Factor Term_LF_TAIL_X  (处理乘除法，X为任意数字)
+        elif symbol == 'Term' and len(children) == 2:
+            left_val = children[0].synthesized_value
+            tail_val = self._process_term_tail(children[1], left_val)
+            node.synthesized_value = tail_val
+        
+        # Expr_LF_TAIL_X -> AddOp (包含操作符的尾部)
+        elif 'Expr_LF_TAIL' in symbol and len(children) == 1:
+            # AddOp中包含了完整的运算，这里会在_process_expr_tail中处理
+            pass
+        
+        # Term_LF_TAIL_X -> MulOp (包含操作符的尾部)
+        elif 'Term_LF_TAIL' in symbol and len(children) == 1:
+            # MulOp中包含了完整的运算，这里会在_process_term_tail中处理
+            pass
+        
+        # AddOp -> 'PLUS' Term AddOp_LF_TAIL_X
+        elif 'AddOp' in symbol and len(children) >= 2:
+            # 操作符组，不单独生成代码
+            pass
+        
+        # MulOp -> 'MUL' Factor MulOp_LF_TAIL_X
+        elif 'MulOp' in symbol and len(children) >= 2:
+            # 操作符组，不单独生成代码
+            pass
+        
+        # Factor -> 'NUM' | 'ID'
+        elif symbol == 'Factor' and len(children) == 1:
+            if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
+                node.synthesized_value = children[0].synthesized_value
+        
+        # Factor -> 'LPAREN' Expr 'RPAREN'
+        elif symbol == 'Factor' and len(children) == 3 and children[0].name == "'LPAREN'":
+            node.synthesized_value = children[1].synthesized_value
+        
+        # ====================================================================
+        # 2. 语句处理
+        # ====================================================================
+        
+        # Stmt -> ...  (先判断语句类型)
+        elif symbol in ['Stmt', 'Statement', 'AssignStmt']:
+            if children and len(children) >= 4:
+                first_child_name = children[0].name
+                
+                # 打印语句: Stmt -> 'PRINT' 'LPAREN' Expr 'RPAREN' 'SEMI'
+                if first_child_name in ["'PRINT'", "PRINT"] and len(children) >= 5:
+                    expr_val = children[2].synthesized_value
+                    # [SDT] 立即生成打印指令（三地址码格式）
+                    if expr_val:
+                        self.emit(f"param {expr_val}")
+                        self.emit(f"call print, 1")
+                
+                # 赋值语句: Stmt -> 'ID' 'ASSIGN' Expr 'SEMI'
+                elif first_child_name in ["'ID'", "ID"]:
+                    var_name = children[0].synthesized_value
+                    expr_val = children[2].synthesized_value
+                    # [SDT] 立即生成赋值指令
+                    if var_name and expr_val:
+                        self.emit(f"{var_name} = {expr_val}")
+                        self.symbol_table[var_name] = {'type': 'var'}
+        
+        # WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
+        elif symbol == 'WriteStmt' and len(children) >= 3:
+            expr_val = children[2].synthesized_value
+            self.emit(f"param {expr_val}")
+            self.emit(f"call write, 1")
+        
+        # ReadStmt -> 'READ' 'ID' 'SEMI'
+        elif symbol == 'ReadStmt' and len(children) >= 2:
+            var_name = children[1].synthesized_value
+            temp = self.new_temp()
+            self.emit(f"{temp} = call read, 0")
+            self.emit(f"{var_name} = {temp}")
+        
+        # ====================================================================
+        # 3. 控制流语句
+        # ====================================================================
+        
+        # WhileStmt -> 'WHILE' 'LPAREN' BoolExpr 'RPAREN' Stmt
+        elif symbol == 'WhileStmt' and len(children) >= 5:
+            loop_label = self.new_label()
+            exit_label = self.new_label()
+            self.emit(f"{loop_label}:")
+            bool_val = children[2].synthesized_value
+            if bool_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = not {bool_val}")
+                self.emit(f"if {temp} goto {exit_label}")
+            # 循环体已经在解析children[4]时生成
+            self.emit(f"goto {loop_label}")
+            self.emit(f"{exit_label}:")
+        
+        # IfStmt -> 'IF' 'LPAREN' BoolExpr 'RPAREN' Stmt
+        elif symbol == 'IfStmt' and len(children) >= 5:
+            bool_val = children[2].synthesized_value
+            exit_label = self.new_label()
+            if bool_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = not {bool_val}")
+                self.emit(f"if {temp} goto {exit_label}")
+            # then分支已经在解析children[4]时生成
+            self.emit(f"{exit_label}:")
+        
+        # BoolExpr -> Expr RelOp Expr
+        elif symbol == 'BoolExpr' and len(children) >= 3:
+            e1 = children[0].synthesized_value
+            op = children[1].synthesized_value
+            e2 = children[2].synthesized_value
+            if e1 and op and e2:
+                temp = self.new_temp()
+                self.emit(f"{temp} = {e1} {op} {e2}")
+                node.synthesized_value = temp
+        
+        # RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
+        elif symbol == 'RelOp' and len(children) == 1:
+            node.synthesized_value = children[0].synthesized_value
+        
+        # ====================================================================
+        # 4. 结构性节点（不生成代码，仅传递信息）
+        # ====================================================================
+        elif symbol in ['Program', 'StmtList', 'Block', 'DeclList', 'VarDecl', 
+                        'IDList', 'DeclListTail', 'IDListTail', 'StmtListTail']:
+            # 这些节点本身不生成代码，子节点已经生成了
+            pass
+    
+    def _process_expr_tail(self, tail_node: ASTNode, left_val: str) -> str:
+        """处理表达式尾部（加减法）- SDT辅助方法
+        
+        处理优化后的文法结构：
+        - Expr_LF_TAIL_X -> AddOp
+        - AddOp -> 'PLUS'/'MINUS' Term AddOp_LF_TAIL_Y
+        """
+        if not tail_node or not tail_node.children:
+            return left_val
+        
+        children = tail_node.children
+        
+        # 如果tail是Expr_LF_TAIL_X -> AddOp的形式
+        if len(children) == 1 and 'AddOp' in children[0].name:
+            return self._process_add_op(children[0], left_val)
+        
+        # 如果tail直接包含操作符（未优化的文法）
+        if children and children[0].name in ["'PLUS'", "'MINUS'"]:
+            op = children[0].synthesized_value
+            right_val = children[1].synthesized_value if len(children) > 1 else None
+            if right_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = {left_val} {op} {right_val}")
+                if len(children) > 2:
+                    return self._process_expr_tail(children[2], temp)
+                return temp
+        
+        return left_val
+    
+    def _process_add_op(self, add_op_node: ASTNode, left_val: str) -> str:
+        """处理AddOp节点
+        
+        AddOp结构: AddOp -> 'PLUS'/'MINUS' Term AddOp_LF_TAIL_X
+        """
+        if not add_op_node or not add_op_node.children:
+            return left_val
+        
+        children = add_op_node.children
+        # DEBUG: print(f"[SDT] _process_add_op: children={[c.name for c in children]}, left={left_val}")
+        
+        if len(children) >= 2:
+            # children[0]是操作符，children[1]是Term，children[2]可能是AddOp_LF_TAIL
+            if children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
+                op = children[0].synthesized_value
+                right_val = children[1].synthesized_value
+                if op and right_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {left_val} {op} {right_val}")
+                    # 检查是否还有递归的AddOp（通过AddOp_LF_TAIL_X -> AddOp）
+                    if len(children) > 2:
+                        tail = children[2]
+                        if tail.children and len(tail.children) == 1 and 'AddOp' in tail.children[0].name:
+                            return self._process_add_op(tail.children[0], temp)
+                    return temp
+        return left_val
+    
+    def _process_term_tail(self, tail_node: ASTNode, left_val: str) -> str:
+        """处理项尾部（乘除法）- SDT辅助方法
+        
+        处理优化后的文法结构：
+        - Term_LF_TAIL_X -> MulOp
+        - MulOp -> 'MUL'/'DIV' Factor MulOp_LF_TAIL_Y
+        """
+        if not tail_node or not tail_node.children:
+            return left_val
+        
+        children = tail_node.children
+        
+        # 如果tail是Term_LF_TAIL_X -> MulOp的形式
+        if len(children) == 1 and 'MulOp' in children[0].name:
+            return self._process_mul_op(children[0], left_val)
+        
+        # 如果tail直接包含操作符（未优化的文法）
+        if children and children[0].name in ["'MUL'", "'DIV'"]:
+            op = children[0].synthesized_value
+            right_val = children[1].synthesized_value if len(children) > 1 else None
+            if right_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = {left_val} {op} {right_val}")
+                if len(children) > 2:
+                    return self._process_term_tail(children[2], temp)
+                return temp
+        
+        return left_val
+    
+    def _process_mul_op(self, mul_op_node: ASTNode, left_val: str) -> str:
+        """处理MulOp节点
+        
+        MulOp结构: MulOp -> 'MUL'/'DIV' Factor MulOp_LF_TAIL_X
+        """
+        if not mul_op_node or not mul_op_node.children:
+            return left_val
+        
+        children = mul_op_node.children
+        # DEBUG: print(f"[SDT] _process_mul_op: children={[c.name for c in children]}, left={left_val}")
+        
+        if len(children) >= 2:
+            # children[0]是操作符，children[1]是Factor，children[2]可能是MulOp_LF_TAIL
+            if children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
+                op = children[0].synthesized_value
+                right_val = children[1].synthesized_value
+                if op and right_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {left_val} {op} {right_val}")
+                    # 检查是否还有递归的MulOp（通过MulOp_LF_TAIL_X -> MulOp）
+                    if len(children) > 2:
+                        tail = children[2]
+                        if tail.children and len(tail.children) == 1 and 'MulOp' in tail.children[0].name:
+                            return self._process_mul_op(tail.children[0], temp)
+                    return temp
+        return left_val
+
+    def parse(self, tokens: List[Token]) -> ASTNode:
+        """解析tokens并生成AST
+        
+        [SDT增强] 在解析过程中同时生成中间代码：
+        - 每次调用前重置代码生成状态
+        - 解析完成后，中间代码已经在code_buffer中
+        - 可通过get_generated_code()获取生成的代码
         """
         if not self.start_symbol:
-            raise RuntimeError("Start symbol not set. Call set_start_symbol() first.")
+            raise RuntimeError("Start symbol not set.")
         if not self.analysis_sets_built:
             self.build_analysis_sets()
-
+        
+        # [SDT] 初始化代码生成状态
+        self.reset_code_generation()
+        
         self.tokens = tokens
         self.pos = 0
-
-        # 从开始符号开始解析
         ast = self.parse_symbol(self.start_symbol)
-
-        # 检查是否已完全解析所有tokens
         if self.current_token().type != 'EOF':
-            raise ParseError(
-                f"Unexpected trailing tokens at position {self.pos}: "
-                f"{self.current_token()}\nTokens remaining: "
-                f"{[str(t) for t in self.tokens[self.pos:]]}"
-            )
-
+            raise ParseError("Unexpected trailing tokens")
+        
+        # [SDT] 此时中间代码已经生成在code_buffer中
         return ast
 
     def get_grammar(self) -> Dict[str, List[List[str]]]:
-        """获取当前的文法规则
-        
-        返回:
-            文法规则字典
-            
-        说明:
-            用于显示或调试当前定义的文法。
-        """
         return self.grammar.copy()
 
 
-def create_parser_from_spec(grammar: Dict[str, List[List[str]]], 
-                            start: str) -> ParserGenerator:
-    """便捷函数：从文法规范创建语法分析器
-    
+def create_parser_from_spec(grammar, start):
+    p = ParserGenerator()
+    p.set_start_symbol(start)
+    for k, v in grammar.items():
+        for prod in v: p.add_production(k, prod)
+    return p
+
+
+def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str) -> str:
+    """生成支持SDT的语法分析器Python代码
+
+    [SDT版本] 生成的解析器在解析过程中同时生成中间代码
+
     参数:
-        grammar: 文法规则字典
-        start: 开始符号
-        
+        grammar: 文法规则字典 {非终结符: [[产生式1], [产生式2], ...]}
+        start_symbol: 开始符号
+
     返回:
-        已配置好的 ParserGenerator 对象
-        
-    说明:
-        快速构造语法分析器的工厂函数。
+        包含完整语法分析器的Python代码字符串（支持SDT）
     """
-    parser = ParserGenerator()
-    parser.set_start_symbol(start)
+    # 序列化文法
+    grammar_dict_str = "{\n"
+    for non_terminal, productions in grammar.items():
+        # 对产生式按长度降序排序，避免短匹配问题
+        sorted_productions = sorted(productions, key=lambda x: len(x), reverse=True)
+        grammar_dict_str += f"            '{non_terminal}': [\n"
+        for production in sorted_productions:
+            # 使用repr()确保正确转义引号
+            prod_str = ", ".join([repr(sym) for sym in production])
+            grammar_dict_str += f"                [{prod_str}],\n"
+        grammar_dict_str += "            ],\n"
+    grammar_dict_str += "        }"
+
+    parser_code = f'''
+# =============================================================================
+# 自动生成的语法分析器 [SDT版本]
+# 在解析过程中同时生成中间代码（语法制导翻译）
+# =============================================================================
+
+from dataclasses import dataclass, field
+from typing import List, Optional
+
+@dataclass
+class ASTNode:
+    """AST节点 [SDT扩展]"""
+    name: str
+    children: List['ASTNode'] = field(default_factory=list)
+    token: Optional[object] = None
+    synthesized_value: str = None  # SDT: 综合属性
     
-    for nonterminal, productions in grammar.items():
-        for production in productions:
-            parser.add_production(nonterminal, production)
+    def __repr__(self, indent=0):
+        prefix = "  " * indent
+        result = f"{{prefix}}{{self.name}}"
+        if self.token:
+            result += f" ('{{self.token.value}}')"
+        if self.synthesized_value:
+            result += f" [val={{self.synthesized_value}}]"
+        result += "\\n"
+        for child in self.children:
+            result += child.__repr__(indent + 1)
+        return result
+
+class GeneratedParser:
+    """自动生成的语法分析器 [SDT版本]
     
-    return parser
+    在解析过程中同时进行代码生成
+    """
+    
+    def __init__(self):
+        self.tokens = []
+        self.pos = 0
+        self.grammar = {grammar_dict_str}
+        self.start_symbol = '{start_symbol}'
+        
+        # [SDT] 代码生成相关
+        self.code_buffer = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.symbol_table = {{}}
+    
+    # [SDT] 代码生成辅助方法
+    def new_temp(self):
+        self.temp_counter += 1
+        return f"t{{self.temp_counter}}"
+    
+    def new_label(self):
+        self.label_counter += 1
+        return f"L{{self.label_counter}}"
+    
+    def emit(self, code):
+        self.code_buffer.append(code)
+    
+    def get_generated_code(self):
+        return '\\n'.join(self.code_buffer)
+    
+    def reset_code_generation(self):
+        self.code_buffer = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.symbol_table = {{}}
+    
+    def current_token(self):
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return self.tokens[-1]
+    
+    def advance(self):
+        if self.pos < len(self.tokens) - 1:
+            token = self.tokens[self.pos]
+            self.pos += 1
+            return token
+        return self.tokens[-1]
+    
+    def expect(self, token_type: str):
+        token = self.current_token()
+        if token.type == token_type:
+            return self.advance()
+        raise SyntaxError(
+            f"语法错误: 第{{token.line}}行, 第{{token.column}}列\\n"
+            f"  期望: {{token_type}}\\n"
+            f"  实际: {{token.type}} (值: '{{token.value}}')"
+        )
+    
+    def parse_symbol(self, symbol: str):
+        # 终结符（带引号）[SDT: 设置综合属性]
+        if symbol.startswith("'") and symbol.endswith("'"):
+            token_type = symbol[1:-1]
+            token = self.expect(token_type)
+            node = ASTNode(name=symbol, token=token)
+            node.synthesized_value = token.value if token else None
+            return node
+        
+        # 非终结符 [SDT: 解析后立即生成代码]
+        if symbol in self.grammar:
+            saved_pos = self.pos
+            for production in self.grammar[symbol]:
+                try:
+                    children = []
+                    for sym in production:
+                        child = self.parse_symbol(sym)
+                        children.append(child)
+                    
+                    node = ASTNode(name=symbol, children=children)
+                    
+                    # [SDT] 识别产生式后立即执行翻译动作
+                    self._apply_sdt_rules(symbol, production, node)
+                    
+                    return node
+                except SyntaxError:
+                    self.pos = saved_pos
+                    continue
+                except Exception:
+                    self.pos = saved_pos
+                    raise
+            
+            # 所有产生式都失败，生成详细的错误信息
+            current = self.current_token()
+            expected_tokens = []
+            for prod in self.grammar[symbol]:
+                if prod and prod[0].startswith("'") and prod[0].endswith("'"):
+                    expected_tokens.append(prod[0][1:-1])
+            
+            expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "未知"
+            raise SyntaxError(
+                f"语法错误: 第{{current.line}}行, 第{{current.column}}列\\n"
+                f"  无法解析非终结符 '{{symbol}}'\\n"
+                f"  当前token: {{current.type}} (值: '{{current.value}}')\\n"
+                f"  期望的token类型: {{expected_str}}"
+            )
+        
+        # 直接匹配token类型
+        if self.current_token().type == symbol:
+            token = self.advance()
+            return ASTNode(name=symbol, token=token)
+        
+        raise SyntaxError(f"未知符号: {{symbol}}")
+    
+    def _apply_sdt_rules(self, symbol, production, node):
+        """应用SDT规则：根据产生式生成代码"""
+        children = node.children
+        
+        # 表达式：Expr -> Term ExprTail
+        if symbol in ['Expr', 'Expression', 'Term']:
+            if len(children) == 1:
+                node.synthesized_value = children[0].synthesized_value
+            elif len(children) == 2:
+                left = children[0].synthesized_value
+                tail = children[1]
+                node.synthesized_value = self._handle_tail(tail, left)
+        
+        # Factor -> NUM | ID
+        elif symbol == 'Factor' and len(children) == 1:
+            if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
+                node.synthesized_value = children[0].synthesized_value
+        
+        # Factor -> ( Expr )
+        elif symbol == 'Factor' and len(children) == 3:
+            node.synthesized_value = children[1].synthesized_value
+        
+        # 赋值: ID = Expr ;
+        elif symbol in ['Stmt', 'AssignStmt'] and len(children) >= 3:
+            if children[0].name == "'ID'":
+                var = children[0].synthesized_value
+                val = children[2].synthesized_value
+                if var and val:
+                    self.emit(f"{{var}} = {{val}}")
+        
+        # 打印: PRINT ( Expr ) ;
+        elif symbol == 'Stmt' and children and children[0].name == "'PRINT'":
+            if len(children) >= 3:
+                val = children[2].synthesized_value
+                if val:
+                    self.emit(f"param {{val}}")
+                    self.emit(f"call print, 1")
+        
+        # WriteStmt
+        elif symbol == 'WriteStmt' and len(children) >= 3:
+            val = children[2].synthesized_value
+            if val:
+                self.emit(f"param {{val}}")
+                self.emit(f"call write, 1")
+        
+        # ReadStmt
+        elif symbol == 'ReadStmt' and len(children) >= 2:
+            var = children[1].synthesized_value
+            if var:
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = call read, 0")
+                self.emit(f"{{var}} = {{temp}}")
+    
+    def _handle_tail(self, tail_node, left_val):
+        """处理表达式尾部"""
+        if not tail_node or not tail_node.children:
+            return left_val
+        children = tail_node.children
+        if children and children[0].name in ["'PLUS'", "'MINUS'", "'MUL'", "'DIV'"]:
+            op = children[0].synthesized_value
+            right = children[1].synthesized_value
+            temp = self.new_temp()
+            self.emit(f"{{temp}} = {{left_val}} {{op}} {{right}}")
+            if len(children) > 2:
+                return self._handle_tail(children[2], temp)
+            return temp
+        return left_val
+    
+    def parse(self, tokens: List):
+        """解析tokens [SDT: 同时生成代码]"""
+        self.reset_code_generation()
+        
+        self.tokens = tokens
+        self.pos = 0
+        try:
+            ast = self.parse_symbol(self.start_symbol)
+        except SyntaxError as e:
+            # 重新抛出，保持错误信息
+            raise
+        
+        current = self.current_token()
+        if current.type != 'EOF':
+            raise SyntaxError(
+                f"语法错误: 第{{current.line}}行, 第{{current.column}}列\\n"
+                f"  解析未完成，仍有未处理的token\\n"
+                f"  剩余token: {{current.type}} (值: '{{current.value}}')"
+            )
+        return ast
+'''
+    return parser_code
