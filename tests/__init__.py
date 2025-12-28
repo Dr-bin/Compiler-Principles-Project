@@ -1,4 +1,4 @@
-"""测试模块
+"""Test module
 
-包含词法分析器、语法分析器和代码生成器的单元测试。
+Contains unit tests for lexer, parser, and code generator.
 """

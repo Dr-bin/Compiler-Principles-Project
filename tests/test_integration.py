@@ -1,93 +1,130 @@
-"""端到端集成测试
-
-测试从规则文件到中间代码生成的完整流程。
 """
+End-to-end integration tests:
+From rule files -> generated lexer/parser -> parse -> IR generation
+
+Goals:
+- Do not swallow parsing errors for the main demo language (simple_expr)
+- Ensure IR is actually produced (non-empty)
+- Add negative cases (lexical error / syntax error)
+"""
+
+from pathlib import Path
+import pytest
 
 from src.frontend.rule_parser import RuleParser, load_rules_from_files
 from src.compiler_generator.lexer_generator import create_lexer_from_spec
 from src.compiler_generator.parser_generator import create_parser_from_spec
 from src.compiler_generator.code_generator import CodeGenerator
-import os
 
 
-class TestIntegration:
-    """集成测试类"""
+EXAMPLES = Path("examples")
 
-    @staticmethod
-    def test_end_to_end():
-        """完整流程测试：从规则文件到代码生成"""
-        
-        # 获取示例语言的规则文件路径
-        lexer_file = 'examples/simple_expr/lexer_rules.txt'
-        grammar_file = 'examples/simple_expr/grammar_rules.txt'
-        
-        # 检查文件是否存在
-        if not os.path.exists(lexer_file) or not os.path.exists(grammar_file):
-            print("Warning: Example files not found, skipping test")
+
+def _require(path: Path):
+    if not path.exists():
+        pytest.skip(f"Missing example file: {path}")
+
+
+def _pick_start_symbol(grammar_rules: dict) -> str:
+    # Try common start symbol names first
+    for cand in ("Program", "program", "S", "Start", "start"):
+        if cand in grammar_rules:
+            return cand
+    return next(iter(grammar_rules.keys()))
+
+
+def _try_codegen_generate(codegen: CodeGenerator, ast):
+    """
+    Adapt to different CodeGenerator APIs.
+    If your project later switches to SDT (emit during parse),
+    this will simply do nothing but still keep tests compatible.
+    """
+    if ast is None:
+        return
+
+    # common method names
+    for name in ("generate", "gen", "visit", "traverse", "emit_from_ast"):
+        fn = getattr(codegen, name, None)
+        if callable(fn):
+            fn(ast)
             return
 
-        # 加载规则
-        lexer_rules, grammar_rules = load_rules_from_files(lexer_file, grammar_file)
-        
-        assert len(lexer_rules) > 0, "Lexer rules should not be empty"
-        assert len(grammar_rules) > 0, "Grammar rules should not be empty"
 
-        # 创建词法分析器
-        lexer = create_lexer_from_spec(lexer_rules)
-        
-        # 词法分析
-        source_code = "x = 1 + 2 ;"
-        tokens = lexer.tokenize(source_code)
-        
-        assert len(tokens) > 0, "Tokens should be generated"
-        assert tokens[-1].type == 'EOF', "Last token should be EOF"
+@pytest.fixture
+def simple_expr_rules():
+    lexer_file = EXAMPLES / "simple_expr" / "lexer_rules.txt"
+    grammar_file = EXAMPLES / "simple_expr" / "grammar_rules.txt"
+    _require(lexer_file)
+    _require(grammar_file)
 
-        # 创建语法分析器
-        start_symbol = list(grammar_rules.keys())[0]
-        parser = create_parser_from_spec(grammar_rules, start_symbol)
-        
-        # 语法分析
-        try:
-            ast = parser.parse(tokens)
-            assert ast is not None, "AST should be generated"
-        except Exception as e:
-            print(f"Note: Parsing may fail due to grammar complexity: {e}")
-
-        # 代码生成
-        codegen = CodeGenerator()
-        intermediate_code = codegen.get_code()
-        
-        # 验证代码生成器初始化成功
-        assert isinstance(intermediate_code, str), "Generated code should be a string"
-
-    @staticmethod
-    def test_rule_parser():
-        """测试规则解析器"""
-        lexer_file = 'examples/simple_expr/lexer_rules.txt'
-        
-        if not os.path.exists(lexer_file):
-            print("Warning: Lexer rules file not found")
-            return
-
-        rules = RuleParser.parse_lexer_rules(lexer_file)
-        assert len(rules) > 0, "Should parse some rules"
-        assert all(isinstance(r, tuple) and len(r) == 2 for r in rules), \
-            "Each rule should be a (token_type, pattern) tuple"
+    lexer_rules, grammar_rules = load_rules_from_files(str(lexer_file), str(grammar_file))
+    assert lexer_rules, "Lexer rules should not be empty"
+    assert grammar_rules, "Grammar rules should not be empty"
+    return lexer_rules, grammar_rules
 
 
-if __name__ == '__main__':
-    test = TestIntegration()
-    
-    print("Running test_end_to_end...")
+@pytest.mark.integration
+def test_end_to_end_simple_expr_generates_ir(simple_expr_rules):
+    lexer_rules, grammar_rules = simple_expr_rules
+
+    lexer = create_lexer_from_spec(lexer_rules)
+    start_symbol = _pick_start_symbol(grammar_rules)
+    parser = create_parser_from_spec(grammar_rules, start_symbol)
+
+    src = "x = 1 + 2 ;"
+    tokens = lexer.tokenize(src)
+    assert tokens and tokens[-1].type == "EOF"
+
+    codegen = CodeGenerator()
+
+    # Prefer SDT-style parse(tokens, codegen=codegen) if supported; else parse(tokens) then codegen(ast)
     try:
-        test.test_end_to_end()
-        print("✓ test_end_to_end passed")
-    except Exception as e:
-        print(f"✗ test_end_to_end failed: {e}")
-    
-    print("\nRunning test_rule_parser...")
-    try:
-        test.test_rule_parser()
-        print("✓ test_rule_parser passed")
-    except Exception as e:
-        print(f"✗ test_rule_parser failed: {e}")
+        ast = parser.parse(tokens, codegen=codegen)
+    except TypeError:
+        ast = parser.parse(tokens)
+
+    assert ast is not None, "Parser should return AST for a valid program"
+
+    # If codegen still requires AST traversal, do it here
+    _try_codegen_generate(codegen, ast)
+
+    ir = codegen.get_code()
+    assert isinstance(ir, str)
+    assert ir.strip() != "", "IR should not be empty for a valid program"
+
+    # Soft checks: avoid binding to exact TAC format, but ensure meaningful content.
+    assert ("=" in ir) or ("t" in ir) or ("temp" in ir) or ("goto" in ir.lower())
+
+
+@pytest.mark.integration
+def test_end_to_end_lexical_error(simple_expr_rules):
+    lexer_rules, _ = simple_expr_rules
+    lexer = create_lexer_from_spec(lexer_rules)
+
+    with pytest.raises(SyntaxError):
+        lexer.tokenize("1 + @ ;")
+
+
+@pytest.mark.integration
+def test_end_to_end_syntax_error(simple_expr_rules):
+    lexer_rules, grammar_rules = simple_expr_rules
+    lexer = create_lexer_from_spec(lexer_rules)
+
+    start_symbol = _pick_start_symbol(grammar_rules)
+    parser = create_parser_from_spec(grammar_rules, start_symbol)
+
+    # Missing semicolon (or other expected terminator)
+    tokens = lexer.tokenize("x = 1 + 2")
+    with pytest.raises(Exception):
+        parser.parse(tokens)
+
+
+@pytest.mark.integration
+def test_rule_parser_smoke():
+    lexer_file = EXAMPLES / "simple_expr" / "lexer_rules.txt"
+    _require(lexer_file)
+
+    rules = RuleParser.parse_lexer_rules(str(lexer_file))
+    assert rules, "Should parse some rules"
+    assert all(isinstance(r, tuple) and len(r) == 2 for r in rules), \
+        "Each rule should be a (token_type, pattern) tuple"
