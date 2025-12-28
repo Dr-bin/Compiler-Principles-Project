@@ -460,36 +460,62 @@ class CodeGenerator:
         return target
 
 # =============================================================================
-# 编译器入口封装
+# 编译器入口封装 [SDT版本]
 # =============================================================================
 
 class GeneratedCompiler:
+    """自动生成的编译器（使用语法制导翻译）
+    
+    [SDT实现] 在解析过程中同时生成中间代码，实现一遍扫描编译
+    """
     def __init__(self):
         self.lexer = GeneratedLexer() 
         self.parser = GeneratedParser()
-        self.codegen = CodeGenerator()
 
     def compile(self, source_code: str) -> List[str]:
+        """编译源代码，返回中间代码列表
+        
+        [SDT] 解析和代码生成同时进行：
+        1. 词法分析生成tokens
+        2. 语法分析过程中同时生成中间代码
+        3. 从parser获取生成的代码
+        """
         tokens = self.lexer.tokenize(source_code)
+        
+        # [SDT关键] parse过程中已经同时生成了中间代码
         ast = self.parser.parse(tokens)
-        return self.codegen.generate(ast)
+        
+        # [SDT] 直接从parser获取生成的中间代码
+        code_str = self.parser.get_generated_code()
+        return code_str.split('\\n') if code_str else []
 
     def compile_file(self, input_file: str, output_file: str):
+        """编译文件并保存结果
+        
+        [SDT] 使用语法制导翻译进行编译
+        """
         try:
             with open(input_file, 'r', encoding='utf-8') as f:
                 source_code = f.read()
-            code = self.compile(source_code)
+            
+            code_lines = self.compile(source_code)
+            
             with open(output_file, 'w', encoding='utf-8') as f:
-                for line in code:
-                    f.write(line + '\\n')
-            print(f"[成功] 编译完成 -> {{output_file}}")
+                for line in code_lines:
+                    if line.strip():  # 只写入非空行
+                        f.write(line + '\\n')
+            
+            print(f"[成功] 编译完成（语法制导翻译）-> {{output_file}}")
+            print(f"       生成 {{len([l for l in code_lines if l.strip()])}} 条中间代码指令")
         except Exception as e:
             print(f"[错误] {{str(e)}}")
+            import traceback
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    arg_parser = argparse.ArgumentParser(description="自动生成的编译器")
-    arg_parser.add_argument("input", help="输入文件")
-    arg_parser.add_argument("-o", "--output", default="output.3ac", help="输出文件")
+    arg_parser = argparse.ArgumentParser(description="自动生成的编译器（SDT版）")
+    arg_parser.add_argument("input", help="输入源代码文件")
+    arg_parser.add_argument("-o", "--output", default="output.tac", help="输出中间代码文件")
 
     args = arg_parser.parse_args()
     compiler = GeneratedCompiler()

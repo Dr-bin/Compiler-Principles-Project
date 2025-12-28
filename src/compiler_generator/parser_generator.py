@@ -2,19 +2,26 @@
 
 该模块实现自动构建解析器的功能，使用LL(1)分析法和递归下降法
 将上下文无关文法(BNF)转换为解析器。
+
+[SDT实现] 使用语法制导翻译(Syntax-Directed Translation)在解析过程中同时生成中间代码
 """
 
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional, Tuple
 from dataclasses import dataclass
 from src.compiler_generator.lexer_generator import Token
 
 
 @dataclass
 class ASTNode:
-    """抽象语法树(AST)节点"""
+    """抽象语法树(AST)节点
+    
+    [SDT扩展] 节点现在携带语义信息：
+    - synthesized_value: 综合属性，用于代码生成（变量名、临时变量等）
+    """
     name: str
     children: List['ASTNode'] = None
     token: Token = None
+    synthesized_value: str = None  # SDT: 综合属性，用于存储代码生成结果
 
     def __post_init__(self):
         if self.children is None:
@@ -25,6 +32,8 @@ class ASTNode:
         result = f"{prefix}{self.name}"
         if self.token:
             result += f" ('{self.token.value}')"
+        if self.synthesized_value:
+            result += f" [val={self.synthesized_value}]"
         result += "\n"
         for child in self.children:
             result += child.__repr__(indent + 1)
@@ -37,9 +46,20 @@ class ParseError(Exception):
 
 
 class ParserGenerator:
-    """语法分析器生成器类"""
+    """语法分析器生成器类
+    
+    [SDT增强] 在语法分析过程中同时进行代码生成：
+    - 每个产生式识别后立即执行翻译动作
+    - 生成的中间代码保存在code_buffer中
+    - 实现真正的一遍扫描编译
+    """
 
-    def __init__(self):
+    def __init__(self, enable_sdt: bool = True):
+        """初始化解析器
+        
+        参数:
+            enable_sdt: 是否启用语法制导翻译（默认启用）
+        """
         self.grammar: Dict[str, List[List[str]]] = {}
         self.start_symbol: str = ""
         self.tokens: List[Token] = []
@@ -50,6 +70,13 @@ class ParserGenerator:
         self.follow_sets: Dict[str, Set[str]] = {}
         self.epsilon_symbol: str = 'EPSILON'
         self.analysis_sets_built = False
+        
+        # [SDT] 语法制导翻译相关属性
+        self.enable_sdt = enable_sdt
+        self.code_buffer: List[str] = []  # 存储生成的中间代码
+        self.temp_counter: int = 0  # 临时变量计数器
+        self.label_counter: int = 0  # 标签计数器
+        self.symbol_table: Dict[str, Dict] = {}  # 符号表
 
     def _compute_first_sets(self):
         """[算法核心] 迭代计算所有符号的 FIRST 集合。"""
@@ -406,6 +433,36 @@ class ParserGenerator:
 
     def set_start_symbol(self, symbol: str) -> None:
         self.start_symbol = symbol
+    
+    # ========================================================================
+    # [SDT] 代码生成辅助方法
+    # ========================================================================
+    
+    def new_temp(self) -> str:
+        """生成新的临时变量名"""
+        self.temp_counter += 1
+        return f"t{self.temp_counter}"
+    
+    def new_label(self) -> str:
+        """生成新的标签名"""
+        self.label_counter += 1
+        return f"L{self.label_counter}"
+    
+    def emit(self, code: str) -> None:
+        """发出一条中间代码指令"""
+        if self.enable_sdt:
+            self.code_buffer.append(code)
+    
+    def get_generated_code(self) -> str:
+        """获取生成的中间代码"""
+        return '\n'.join(self.code_buffer)
+    
+    def reset_code_generation(self) -> None:
+        """重置代码生成状态（用于新的编译）"""
+        self.code_buffer = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.symbol_table = {}
 
     def current_token(self) -> Token:
         if self.pos < len(self.tokens): return self.tokens[self.pos]
@@ -424,9 +481,19 @@ class ParserGenerator:
             )
 
     def parse_symbol(self, symbol: str) -> ASTNode:
+        """解析符号并同时进行代码生成（SDT）
+        
+        [SDT核心] 在识别产生式后立即执行翻译动作：
+        - 终结符：直接匹配并返回节点
+        - 非终结符：递归解析子符号，然后根据产生式生成代码
+        """
         if symbol.startswith("'") and symbol.endswith("'"):
             token_type = symbol[1:-1]
-            return self.match(token_type)
+            node = self.match(token_type)
+            # [SDT] 终结符的综合属性就是其词法值
+            if node.token:
+                node.synthesized_value = node.token.value
+            return node
 
         if symbol not in self.grammar:
             raise ParseError(f"Unknown symbol reference in grammar: {symbol}")
@@ -448,26 +515,317 @@ class ParserGenerator:
         if found_production is not None:
             children_nodes = []
             if not found_production and self.epsilon_symbol in self._get_first_set_for_sequence(found_production):
-                return ASTNode(name=symbol, children=[], token=None)
+                return ASTNode(name=symbol, children=[], token=None, synthesized_value=None)
+            
+            # 递归解析所有子符号
             for sym in found_production:
                 children_nodes.append(self.parse_symbol(sym))
-            return ASTNode(name=symbol, children=children_nodes)
+            
+            node = ASTNode(name=symbol, children=children_nodes)
+            
+            # [SDT] *** 关键：识别产生式后立即执行翻译动作 ***
+            if self.enable_sdt:
+                self._apply_translation_scheme(symbol, found_production, node)
+            
+            return node
         else:
             expected = self.first_sets.get(symbol, set()) - {self.epsilon_symbol}
             if self.epsilon_symbol in self.first_sets.get(symbol, set()):
                 expected.update(self.follow_sets.get(symbol, set()))
             raise ParseError(f"Syntax Error: Expected one of {expected}")
+    
+    def _apply_translation_scheme(self, symbol: str, production: List[str], node: ASTNode) -> None:
+        """应用翻译方案：根据产生式生成中间代码（SDT核心）
+        
+        这是语法制导翻译的核心方法，每识别一个产生式就立即执行翻译动作。
+        
+        参数:
+            symbol: 非终结符名称
+            production: 产生式右部
+            node: 已解析的AST节点（包含子节点）
+        
+        说明:
+            根据不同的产生式模式，生成相应的三地址码。
+            使用灵活的模式匹配，兼容文法优化后的名称变化。
+        """
+        children = node.children
+        
+        # ====================================================================
+        # 1. 表达式和算术运算
+        # ====================================================================
+        
+        # Expr -> Term (只有一个子节点)
+        if symbol in ['Expr', 'Expression', 'Term'] and len(children) == 1:
+            node.synthesized_value = children[0].synthesized_value
+        
+        # Expr -> Term Expr_LF_TAIL_X  (处理加减法，X为任意数字)
+        elif symbol == 'Expr' and len(children) == 2:
+            left_val = children[0].synthesized_value
+            # DEBUG: print(f"[SDT] Processing Expr with tail: left_val={left_val}, tail={children[1].name}")
+            tail_val = self._process_expr_tail(children[1], left_val)
+            # DEBUG: print(f"[SDT] Expr result: tail_val={tail_val}")
+            node.synthesized_value = tail_val
+        
+        # Term -> Factor Term_LF_TAIL_X  (处理乘除法，X为任意数字)
+        elif symbol == 'Term' and len(children) == 2:
+            left_val = children[0].synthesized_value
+            tail_val = self._process_term_tail(children[1], left_val)
+            node.synthesized_value = tail_val
+        
+        # Expr_LF_TAIL_X -> AddOp (包含操作符的尾部)
+        elif 'Expr_LF_TAIL' in symbol and len(children) == 1:
+            # AddOp中包含了完整的运算，这里会在_process_expr_tail中处理
+            pass
+        
+        # Term_LF_TAIL_X -> MulOp (包含操作符的尾部)
+        elif 'Term_LF_TAIL' in symbol and len(children) == 1:
+            # MulOp中包含了完整的运算，这里会在_process_term_tail中处理
+            pass
+        
+        # AddOp -> 'PLUS' Term AddOp_LF_TAIL_X
+        elif 'AddOp' in symbol and len(children) >= 2:
+            # 操作符组，不单独生成代码
+            pass
+        
+        # MulOp -> 'MUL' Factor MulOp_LF_TAIL_X
+        elif 'MulOp' in symbol and len(children) >= 2:
+            # 操作符组，不单独生成代码
+            pass
+        
+        # Factor -> 'NUM' | 'ID'
+        elif symbol == 'Factor' and len(children) == 1:
+            if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
+                node.synthesized_value = children[0].synthesized_value
+        
+        # Factor -> 'LPAREN' Expr 'RPAREN'
+        elif symbol == 'Factor' and len(children) == 3 and children[0].name == "'LPAREN'":
+            node.synthesized_value = children[1].synthesized_value
+        
+        # ====================================================================
+        # 2. 语句处理
+        # ====================================================================
+        
+        # Stmt -> ...  (先判断语句类型)
+        elif symbol in ['Stmt', 'Statement', 'AssignStmt']:
+            if children and len(children) >= 4:
+                first_child_name = children[0].name
+                
+                # 打印语句: Stmt -> 'PRINT' 'LPAREN' Expr 'RPAREN' 'SEMI'
+                if first_child_name in ["'PRINT'", "PRINT"] and len(children) >= 5:
+                    expr_val = children[2].synthesized_value
+                    # [SDT] 立即生成打印指令（三地址码格式）
+                    if expr_val:
+                        self.emit(f"param {expr_val}")
+                        self.emit(f"call print, 1")
+                
+                # 赋值语句: Stmt -> 'ID' 'ASSIGN' Expr 'SEMI'
+                elif first_child_name in ["'ID'", "ID"]:
+                    var_name = children[0].synthesized_value
+                    expr_val = children[2].synthesized_value
+                    # [SDT] 立即生成赋值指令
+                    if var_name and expr_val:
+                        self.emit(f"{var_name} = {expr_val}")
+                        self.symbol_table[var_name] = {'type': 'var'}
+        
+        # WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
+        elif symbol == 'WriteStmt' and len(children) >= 3:
+            expr_val = children[2].synthesized_value
+            self.emit(f"param {expr_val}")
+            self.emit(f"call write, 1")
+        
+        # ReadStmt -> 'READ' 'ID' 'SEMI'
+        elif symbol == 'ReadStmt' and len(children) >= 2:
+            var_name = children[1].synthesized_value
+            temp = self.new_temp()
+            self.emit(f"{temp} = call read, 0")
+            self.emit(f"{var_name} = {temp}")
+        
+        # ====================================================================
+        # 3. 控制流语句
+        # ====================================================================
+        
+        # WhileStmt -> 'WHILE' 'LPAREN' BoolExpr 'RPAREN' Stmt
+        elif symbol == 'WhileStmt' and len(children) >= 5:
+            loop_label = self.new_label()
+            exit_label = self.new_label()
+            self.emit(f"{loop_label}:")
+            bool_val = children[2].synthesized_value
+            if bool_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = not {bool_val}")
+                self.emit(f"if {temp} goto {exit_label}")
+            # 循环体已经在解析children[4]时生成
+            self.emit(f"goto {loop_label}")
+            self.emit(f"{exit_label}:")
+        
+        # IfStmt -> 'IF' 'LPAREN' BoolExpr 'RPAREN' Stmt
+        elif symbol == 'IfStmt' and len(children) >= 5:
+            bool_val = children[2].synthesized_value
+            exit_label = self.new_label()
+            if bool_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = not {bool_val}")
+                self.emit(f"if {temp} goto {exit_label}")
+            # then分支已经在解析children[4]时生成
+            self.emit(f"{exit_label}:")
+        
+        # BoolExpr -> Expr RelOp Expr
+        elif symbol == 'BoolExpr' and len(children) >= 3:
+            e1 = children[0].synthesized_value
+            op = children[1].synthesized_value
+            e2 = children[2].synthesized_value
+            if e1 and op and e2:
+                temp = self.new_temp()
+                self.emit(f"{temp} = {e1} {op} {e2}")
+                node.synthesized_value = temp
+        
+        # RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
+        elif symbol == 'RelOp' and len(children) == 1:
+            node.synthesized_value = children[0].synthesized_value
+        
+        # ====================================================================
+        # 4. 结构性节点（不生成代码，仅传递信息）
+        # ====================================================================
+        elif symbol in ['Program', 'StmtList', 'Block', 'DeclList', 'VarDecl', 
+                        'IDList', 'DeclListTail', 'IDListTail', 'StmtListTail']:
+            # 这些节点本身不生成代码，子节点已经生成了
+            pass
+    
+    def _process_expr_tail(self, tail_node: ASTNode, left_val: str) -> str:
+        """处理表达式尾部（加减法）- SDT辅助方法
+        
+        处理优化后的文法结构：
+        - Expr_LF_TAIL_X -> AddOp
+        - AddOp -> 'PLUS'/'MINUS' Term AddOp_LF_TAIL_Y
+        """
+        if not tail_node or not tail_node.children:
+            return left_val
+        
+        children = tail_node.children
+        
+        # 如果tail是Expr_LF_TAIL_X -> AddOp的形式
+        if len(children) == 1 and 'AddOp' in children[0].name:
+            return self._process_add_op(children[0], left_val)
+        
+        # 如果tail直接包含操作符（未优化的文法）
+        if children and children[0].name in ["'PLUS'", "'MINUS'"]:
+            op = children[0].synthesized_value
+            right_val = children[1].synthesized_value if len(children) > 1 else None
+            if right_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = {left_val} {op} {right_val}")
+                if len(children) > 2:
+                    return self._process_expr_tail(children[2], temp)
+                return temp
+        
+        return left_val
+    
+    def _process_add_op(self, add_op_node: ASTNode, left_val: str) -> str:
+        """处理AddOp节点
+        
+        AddOp结构: AddOp -> 'PLUS'/'MINUS' Term AddOp_LF_TAIL_X
+        """
+        if not add_op_node or not add_op_node.children:
+            return left_val
+        
+        children = add_op_node.children
+        # DEBUG: print(f"[SDT] _process_add_op: children={[c.name for c in children]}, left={left_val}")
+        
+        if len(children) >= 2:
+            # children[0]是操作符，children[1]是Term，children[2]可能是AddOp_LF_TAIL
+            if children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
+                op = children[0].synthesized_value
+                right_val = children[1].synthesized_value
+                if op and right_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {left_val} {op} {right_val}")
+                    # 检查是否还有递归的AddOp（通过AddOp_LF_TAIL_X -> AddOp）
+                    if len(children) > 2:
+                        tail = children[2]
+                        if tail.children and len(tail.children) == 1 and 'AddOp' in tail.children[0].name:
+                            return self._process_add_op(tail.children[0], temp)
+                    return temp
+        return left_val
+    
+    def _process_term_tail(self, tail_node: ASTNode, left_val: str) -> str:
+        """处理项尾部（乘除法）- SDT辅助方法
+        
+        处理优化后的文法结构：
+        - Term_LF_TAIL_X -> MulOp
+        - MulOp -> 'MUL'/'DIV' Factor MulOp_LF_TAIL_Y
+        """
+        if not tail_node or not tail_node.children:
+            return left_val
+        
+        children = tail_node.children
+        
+        # 如果tail是Term_LF_TAIL_X -> MulOp的形式
+        if len(children) == 1 and 'MulOp' in children[0].name:
+            return self._process_mul_op(children[0], left_val)
+        
+        # 如果tail直接包含操作符（未优化的文法）
+        if children and children[0].name in ["'MUL'", "'DIV'"]:
+            op = children[0].synthesized_value
+            right_val = children[1].synthesized_value if len(children) > 1 else None
+            if right_val:
+                temp = self.new_temp()
+                self.emit(f"{temp} = {left_val} {op} {right_val}")
+                if len(children) > 2:
+                    return self._process_term_tail(children[2], temp)
+                return temp
+        
+        return left_val
+    
+    def _process_mul_op(self, mul_op_node: ASTNode, left_val: str) -> str:
+        """处理MulOp节点
+        
+        MulOp结构: MulOp -> 'MUL'/'DIV' Factor MulOp_LF_TAIL_X
+        """
+        if not mul_op_node or not mul_op_node.children:
+            return left_val
+        
+        children = mul_op_node.children
+        # DEBUG: print(f"[SDT] _process_mul_op: children={[c.name for c in children]}, left={left_val}")
+        
+        if len(children) >= 2:
+            # children[0]是操作符，children[1]是Factor，children[2]可能是MulOp_LF_TAIL
+            if children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
+                op = children[0].synthesized_value
+                right_val = children[1].synthesized_value
+                if op and right_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {left_val} {op} {right_val}")
+                    # 检查是否还有递归的MulOp（通过MulOp_LF_TAIL_X -> MulOp）
+                    if len(children) > 2:
+                        tail = children[2]
+                        if tail.children and len(tail.children) == 1 and 'MulOp' in tail.children[0].name:
+                            return self._process_mul_op(tail.children[0], temp)
+                    return temp
+        return left_val
 
     def parse(self, tokens: List[Token]) -> ASTNode:
+        """解析tokens并生成AST
+        
+        [SDT增强] 在解析过程中同时生成中间代码：
+        - 每次调用前重置代码生成状态
+        - 解析完成后，中间代码已经在code_buffer中
+        - 可通过get_generated_code()获取生成的代码
+        """
         if not self.start_symbol:
             raise RuntimeError("Start symbol not set.")
         if not self.analysis_sets_built:
             self.build_analysis_sets()
+        
+        # [SDT] 初始化代码生成状态
+        self.reset_code_generation()
+        
         self.tokens = tokens
         self.pos = 0
         ast = self.parse_symbol(self.start_symbol)
         if self.current_token().type != 'EOF':
             raise ParseError("Unexpected trailing tokens")
+        
+        # [SDT] 此时中间代码已经生成在code_buffer中
         return ast
 
     def get_grammar(self) -> Dict[str, List[List[str]]]:
@@ -483,14 +841,16 @@ def create_parser_from_spec(grammar, start):
 
 
 def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str) -> str:
-    """生成语法分析器的Python代码
+    """生成支持SDT的语法分析器Python代码
+
+    [SDT版本] 生成的解析器在解析过程中同时生成中间代码
 
     参数:
         grammar: 文法规则字典 {非终结符: [[产生式1], [产生式2], ...]}
         start_symbol: 开始符号
 
     返回:
-        包含完整语法分析器的Python代码字符串
+        包含完整语法分析器的Python代码字符串（支持SDT）
     """
     # 序列化文法
     grammar_dict_str = "{\n"
@@ -507,7 +867,8 @@ def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str)
 
     parser_code = f'''
 # =============================================================================
-# 自动生成的语法分析器
+# 自动生成的语法分析器 [SDT版本]
+# 在解析过程中同时生成中间代码（语法制导翻译）
 # =============================================================================
 
 from dataclasses import dataclass, field
@@ -515,29 +876,62 @@ from typing import List, Optional
 
 @dataclass
 class ASTNode:
-    """AST节点"""
+    """AST节点 [SDT扩展]"""
     name: str
     children: List['ASTNode'] = field(default_factory=list)
     token: Optional[object] = None
+    synthesized_value: str = None  # SDT: 综合属性
     
     def __repr__(self, indent=0):
         prefix = "  " * indent
         result = f"{{prefix}}{{self.name}}"
         if self.token:
             result += f" ('{{self.token.value}}')"
+        if self.synthesized_value:
+            result += f" [val={{self.synthesized_value}}]"
         result += "\\n"
         for child in self.children:
             result += child.__repr__(indent + 1)
         return result
 
 class GeneratedParser:
-    """自动生成的语法分析器"""
+    """自动生成的语法分析器 [SDT版本]
+    
+    在解析过程中同时进行代码生成
+    """
     
     def __init__(self):
         self.tokens = []
         self.pos = 0
         self.grammar = {grammar_dict_str}
         self.start_symbol = '{start_symbol}'
+        
+        # [SDT] 代码生成相关
+        self.code_buffer = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.symbol_table = {{}}
+    
+    # [SDT] 代码生成辅助方法
+    def new_temp(self):
+        self.temp_counter += 1
+        return f"t{{self.temp_counter}}"
+    
+    def new_label(self):
+        self.label_counter += 1
+        return f"L{{self.label_counter}}"
+    
+    def emit(self, code):
+        self.code_buffer.append(code)
+    
+    def get_generated_code(self):
+        return '\\n'.join(self.code_buffer)
+    
+    def reset_code_generation(self):
+        self.code_buffer = []
+        self.temp_counter = 0
+        self.label_counter = 0
+        self.symbol_table = {{}}
     
     def current_token(self):
         if self.pos < len(self.tokens):
@@ -562,13 +956,15 @@ class GeneratedParser:
         )
     
     def parse_symbol(self, symbol: str):
-        # 终结符（带引号）
+        # 终结符（带引号）[SDT: 设置综合属性]
         if symbol.startswith("'") and symbol.endswith("'"):
             token_type = symbol[1:-1]
             token = self.expect(token_type)
-            return ASTNode(name=symbol, token=token)
+            node = ASTNode(name=symbol, token=token)
+            node.synthesized_value = token.value if token else None
+            return node
         
-        # 非终结符
+        # 非终结符 [SDT: 解析后立即生成代码]
         if symbol in self.grammar:
             saved_pos = self.pos
             for production in self.grammar[symbol]:
@@ -577,7 +973,13 @@ class GeneratedParser:
                     for sym in production:
                         child = self.parse_symbol(sym)
                         children.append(child)
-                    return ASTNode(name=symbol, children=children)
+                    
+                    node = ASTNode(name=symbol, children=children)
+                    
+                    # [SDT] 识别产生式后立即执行翻译动作
+                    self._apply_sdt_rules(symbol, production, node)
+                    
+                    return node
                 except SyntaxError:
                     self.pos = saved_pos
                     continue
@@ -607,7 +1009,78 @@ class GeneratedParser:
         
         raise SyntaxError(f"未知符号: {{symbol}}")
     
+    def _apply_sdt_rules(self, symbol, production, node):
+        """应用SDT规则：根据产生式生成代码"""
+        children = node.children
+        
+        # 表达式：Expr -> Term ExprTail
+        if symbol in ['Expr', 'Expression', 'Term']:
+            if len(children) == 1:
+                node.synthesized_value = children[0].synthesized_value
+            elif len(children) == 2:
+                left = children[0].synthesized_value
+                tail = children[1]
+                node.synthesized_value = self._handle_tail(tail, left)
+        
+        # Factor -> NUM | ID
+        elif symbol == 'Factor' and len(children) == 1:
+            if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
+                node.synthesized_value = children[0].synthesized_value
+        
+        # Factor -> ( Expr )
+        elif symbol == 'Factor' and len(children) == 3:
+            node.synthesized_value = children[1].synthesized_value
+        
+        # 赋值: ID = Expr ;
+        elif symbol in ['Stmt', 'AssignStmt'] and len(children) >= 3:
+            if children[0].name == "'ID'":
+                var = children[0].synthesized_value
+                val = children[2].synthesized_value
+                if var and val:
+                    self.emit(f"{{var}} = {{val}}")
+        
+        # 打印: PRINT ( Expr ) ;
+        elif symbol == 'Stmt' and children and children[0].name == "'PRINT'":
+            if len(children) >= 3:
+                val = children[2].synthesized_value
+                if val:
+                    self.emit(f"param {{val}}")
+                    self.emit(f"call print, 1")
+        
+        # WriteStmt
+        elif symbol == 'WriteStmt' and len(children) >= 3:
+            val = children[2].synthesized_value
+            if val:
+                self.emit(f"param {{val}}")
+                self.emit(f"call write, 1")
+        
+        # ReadStmt
+        elif symbol == 'ReadStmt' and len(children) >= 2:
+            var = children[1].synthesized_value
+            if var:
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = call read, 0")
+                self.emit(f"{{var}} = {{temp}}")
+    
+    def _handle_tail(self, tail_node, left_val):
+        """处理表达式尾部"""
+        if not tail_node or not tail_node.children:
+            return left_val
+        children = tail_node.children
+        if children and children[0].name in ["'PLUS'", "'MINUS'", "'MUL'", "'DIV'"]:
+            op = children[0].synthesized_value
+            right = children[1].synthesized_value
+            temp = self.new_temp()
+            self.emit(f"{{temp}} = {{left_val}} {{op}} {{right}}")
+            if len(children) > 2:
+                return self._handle_tail(children[2], temp)
+            return temp
+        return left_val
+    
     def parse(self, tokens: List):
+        """解析tokens [SDT: 同时生成代码]"""
+        self.reset_code_generation()
+        
         self.tokens = tokens
         self.pos = 0
         try:

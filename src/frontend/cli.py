@@ -256,14 +256,20 @@ class CompilerCLI:
                     print(f"\n词法错误: {error_msg}")
                 return 1
 
-            # 语法分析
-            self.logger.info("执行语法分析...")
+            # [SDT] 语法分析与代码生成（一遍扫描）
+            self.logger.info("执行语法制导翻译（解析+代码生成）...")
             # 需要从grammar_rules中确定起始符号
             start_symbol = list(grammar_rules.keys())[0] if grammar_rules else 'Program'
             parser = create_parser_from_spec(grammar_rules, start_symbol)
             try:
+                # [SDT关键] parse方法现在会在解析过程中同时生成中间代码
                 ast = parser.parse(tokens)
-                self.logger.info("语法分析完成，生成AST")
+                self.logger.info("[完成] 语法分析完成")
+                self.logger.info("[完成] 中间代码生成完成（语法制导翻译）")
+                
+                # [SDT] 从解析器中获取生成的中间代码
+                intermediate_code = parser.get_generated_code()
+                
             except ParseError as e:
                 # 使用错误格式化器显示友好的错误信息
                 formatter = ErrorFormatter(source_code=source_code, source_file=args.source)
@@ -282,11 +288,6 @@ class CompilerCLI:
                     print(f"\n语法错误: {error_info['message']}")
                     print(f"位置: 第 {error_info['line']} 行, 第 {error_info['column']} 列")
                 return 1
-
-            # 代码生成
-            self.logger.info("执行代码生成...")
-            codegen = CodeGenerator()
-            intermediate_code = codegen.generate_from_ast(ast)
 
             # 输出结果
             if args.output:
