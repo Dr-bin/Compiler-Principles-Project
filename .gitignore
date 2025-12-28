@@ -25,3 +25,10 @@ ENV/
 # OS files
 Thumbs.db
 .DS_Store
+
+# Test outputs (can be regenerated)
+test_outputs/
+*.tac
+
+# Generated files
+generated/compiler.py
