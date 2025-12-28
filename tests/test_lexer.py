@@ -229,7 +229,7 @@ class TestLexerGenerator:
         except SyntaxError as e:
             msg = str(e)
             # Not a hard requirement, just needs to contain '#' or 'illegal character' etc.
-            assert '#' in msg or 'illegal' in msg or 'invalid' in msg or 'unexpected' in msg
+            assert '#' in msg or '非法' in msg or 'invalid' in msg
 
 
 if __name__ == '__main__':

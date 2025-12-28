@@ -5,8 +5,8 @@
 Program -> StmtList
 
 # 语句列表：一个或多个语句
-# 使用递归结构，当遇到EOF时选择ε产生式结束
-StmtList -> Stmt StmtList |
+# 注意：产生式顺序很重要！递归产生式应该放在后面以便正确回溯
+StmtList -> Stmt StmtList | Stmt
 
 # 语句：赋值或打印
 Stmt -> 'ID' 'ASSIGN' Expr 'SEMI' | 'PRINT' 'LPAREN' Expr 'RPAREN' 'SEMI'
@@ -15,11 +15,11 @@ Stmt -> 'ID' 'ASSIGN' Expr 'SEMI' | 'PRINT' 'LPAREN' Expr 'RPAREN' 'SEMI'
 # 使用左结合的产生式顺序来避免右递归无限循环
 Expr -> Term AddOp | Term
 
-AddOp -> 'PLUS' Term AddOp | 'MINUS' Term AddOp | 'PLUS' Term | 'MINUS' Term |
+AddOp -> 'PLUS' Term AddOp | 'MINUS' Term AddOp | 'PLUS' Term | 'MINUS' Term
 
-Term -> Factor MulOp
+Term -> Factor MulOp | Factor
 
-MulOp -> 'MUL' Factor MulOp | 'DIV' Factor MulOp | 'MUL' Factor | 'DIV' Factor |
+MulOp -> 'MUL' Factor MulOp | 'DIV' Factor MulOp | 'MUL' Factor | 'DIV' Factor
 
 # 因子：数字、标识符或括号表达式
 Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'
