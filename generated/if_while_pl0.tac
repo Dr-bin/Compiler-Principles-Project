@@ -1,17 +1,21 @@
 x = 3
 y = 5
-if not x < y goto L1
-max = y
-goto L2
-L1:
 max = x
-L2:
-print(max)
+t1 = x < y
+max = y
+t2 = not t1
+if t2 goto L1
+L1:
+param max
+call write, 1
 i = 0
+t3 = i < 5
+param i
+call write, 1
+t4 = i + 1
+i = t4
+L2:
+t5 = not t3
+if t5 goto L3
+goto L2
 L3:
-if not i < 5 goto L4
-print(i)
-t1 = i + 1
-i = t1
-goto L3
-L4:

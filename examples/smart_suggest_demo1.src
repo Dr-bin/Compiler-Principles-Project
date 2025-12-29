@@ -1,0 +1,4 @@
+count = 10 ;
+index = 0 ;
+value = 5 ;
+total = cont + indx + valeu ;

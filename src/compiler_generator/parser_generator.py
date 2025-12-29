@@ -4,11 +4,13 @@
 将上下文无关文法(BNF)转换为解析器。
 
 [SDT实现] 使用语法制导翻译(Syntax-Directed Translation)在解析过程中同时生成中间代码
+[智能提示] 使用编辑距离算法提供变量拼写错误的修复建议
 """
 
 from typing import List, Dict, Set, Optional, Tuple
 from dataclasses import dataclass
 from src.compiler_generator.lexer_generator import Token
+from src.utils.smart_suggest import suggest_variable_fix
 
 
 @dataclass
@@ -77,6 +79,10 @@ class ParserGenerator:
         self.temp_counter: int = 0  # 临时变量计数器
         self.label_counter: int = 0  # 标签计数器
         self.symbol_table: Dict[str, Dict] = {}  # 符号表
+        
+        # [智能提示] 变量检查相关属性
+        self.enable_variable_check = True  # 是否启用变量检查
+        self.semantic_errors: List[str] = []  # 收集语义错误
 
     def _compute_first_sets(self):
         """[算法核心] 迭代计算所有符号的 FIRST 集合。"""
@@ -463,6 +469,48 @@ class ParserGenerator:
         self.temp_counter = 0
         self.label_counter = 0
         self.symbol_table = {}
+        self.semantic_errors = []
+    
+    def check_variable_defined(self, var_name: str, token: Token = None) -> bool:
+        """检查变量是否已定义，如果未定义则记录错误并提供建议
+        
+        参数:
+            var_name: 变量名
+            token: 对应的 Token（用于获取位置信息）
+            
+        返回:
+            True 如果变量已定义，False 否则
+        """
+        if not self.enable_variable_check:
+            return True
+            
+        if var_name in self.symbol_table:
+            return True
+        
+        # 变量未定义，生成智能建议
+        line = token.line if token else 0
+        column = token.column if token else 0
+        
+        # 获取所有已定义的变量名
+        defined_vars = set(self.symbol_table.keys())
+        suggestion = suggest_variable_fix(var_name, defined_vars)
+        
+        error_msg = f"语义错误: 第 {line} 行, 第 {column} 列 - 变量 '{var_name}' 未定义"
+        if suggestion:
+            error_msg += f"\n  [智能建议] 你是不是想用 '{suggestion}'?"
+        elif defined_vars:
+            error_msg += f"\n  [提示] 已定义的变量: {', '.join(sorted(defined_vars))}"
+        
+        self.semantic_errors.append(error_msg)
+        return False
+    
+    def get_semantic_errors(self) -> List[str]:
+        """获取所有语义错误"""
+        return self.semantic_errors.copy()
+    
+    def has_semantic_errors(self) -> bool:
+        """检查是否有语义错误"""
+        return len(self.semantic_errors) > 0
 
     def current_token(self) -> Token:
         if self.pos < len(self.tokens): return self.tokens[self.pos]
@@ -582,6 +630,16 @@ class ParserGenerator:
             # MulOp中包含了完整的运算，这里会在_process_term_tail中处理
             pass
         
+        # [PL/0格式] ExprTail -> 'PLUS'/'MINUS' Term ExprTail | epsilon
+        elif symbol == 'ExprTail' and len(children) >= 2:
+            # 不在这里处理，由_process_expr_tail处理
+            pass
+        
+        # [PL/0格式] TermTail -> 'MUL'/'DIV' Factor TermTail | epsilon
+        elif symbol == 'TermTail' and len(children) >= 2:
+            # 不在这里处理，由_process_term_tail处理
+            pass
+        
         # AddOp -> 'PLUS' Term AddOp_LF_TAIL_X
         elif 'AddOp' in symbol and len(children) >= 2:
             # 操作符组，不单独生成代码
@@ -594,8 +652,15 @@ class ParserGenerator:
         
         # Factor -> 'NUM' | 'ID'
         elif symbol == 'Factor' and len(children) == 1:
-            if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
-                node.synthesized_value = children[0].synthesized_value
+            child = children[0]
+            if child.name in ["'NUM'", "NUM"]:
+                node.synthesized_value = child.synthesized_value
+            elif child.name in ["'ID'", "ID"]:
+                var_name = child.synthesized_value
+                # [智能提示] 检查变量是否已定义
+                if var_name and self.enable_variable_check:
+                    self.check_variable_defined(var_name, child.token)
+                node.synthesized_value = var_name
         
         # Factor -> 'LPAREN' Expr 'RPAREN'
         elif symbol == 'Factor' and len(children) == 3 and children[0].name == "'LPAREN'":
@@ -694,27 +759,29 @@ class ParserGenerator:
     def _process_expr_tail(self, tail_node: ASTNode, left_val: str) -> str:
         """处理表达式尾部（加减法）- SDT辅助方法
         
-        处理优化后的文法结构：
-        - Expr_LF_TAIL_X -> AddOp
-        - AddOp -> 'PLUS'/'MINUS' Term AddOp_LF_TAIL_Y
+        支持两种文法格式：
+        1. simple_expr: Expr_LF_TAIL_X -> AddOp
+        2. PL/0: ExprTail -> 'PLUS'/'MINUS' Term ExprTail
         """
         if not tail_node or not tail_node.children:
             return left_val
         
         children = tail_node.children
         
-        # 如果tail是Expr_LF_TAIL_X -> AddOp的形式
+        # 格式1: Expr_LF_TAIL_X -> AddOp (simple_expr)
         if len(children) == 1 and 'AddOp' in children[0].name:
             return self._process_add_op(children[0], left_val)
         
-        # 如果tail直接包含操作符（未优化的文法）
-        if children and children[0].name in ["'PLUS'", "'MINUS'"]:
+        # 格式2: ExprTail -> 'PLUS'/'MINUS' Term ExprTail (PL/0)
+        # 或者未优化的文法
+        if children and children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
             op = children[0].synthesized_value
             right_val = children[1].synthesized_value if len(children) > 1 else None
-            if right_val:
+            if op and right_val:
                 temp = self.new_temp()
                 self.emit(f"{temp} = {left_val} {op} {right_val}")
-                if len(children) > 2:
+                # 递归处理剩余的ExprTail
+                if len(children) > 2 and children[2].children:
                     return self._process_expr_tail(children[2], temp)
                 return temp
         
@@ -750,27 +817,29 @@ class ParserGenerator:
     def _process_term_tail(self, tail_node: ASTNode, left_val: str) -> str:
         """处理项尾部（乘除法）- SDT辅助方法
         
-        处理优化后的文法结构：
-        - Term_LF_TAIL_X -> MulOp
-        - MulOp -> 'MUL'/'DIV' Factor MulOp_LF_TAIL_Y
+        支持两种文法格式：
+        1. simple_expr: Term_LF_TAIL_X -> MulOp
+        2. PL/0: TermTail -> 'MUL'/'DIV' Factor TermTail
         """
         if not tail_node or not tail_node.children:
             return left_val
         
         children = tail_node.children
         
-        # 如果tail是Term_LF_TAIL_X -> MulOp的形式
+        # 格式1: Term_LF_TAIL_X -> MulOp (simple_expr)
         if len(children) == 1 and 'MulOp' in children[0].name:
             return self._process_mul_op(children[0], left_val)
         
-        # 如果tail直接包含操作符（未优化的文法）
-        if children and children[0].name in ["'MUL'", "'DIV'"]:
+        # 格式2: TermTail -> 'MUL'/'DIV' Factor TermTail (PL/0)
+        # 或者未优化的文法
+        if children and children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
             op = children[0].synthesized_value
             right_val = children[1].synthesized_value if len(children) > 1 else None
-            if right_val:
+            if op and right_val:
                 temp = self.new_temp()
                 self.emit(f"{temp} = {left_val} {op} {right_val}")
-                if len(children) > 2:
+                # 递归处理剩余的TermTail
+                if len(children) > 2 and children[2].children:
                     return self._process_term_tail(children[2], temp)
                 return temp
         

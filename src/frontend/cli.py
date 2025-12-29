@@ -15,6 +15,7 @@ from src.compiler_generator.code_generator import CodeGenerator, generate_compil
 from src.utils.logger import Logger
 from src.utils.error_handler import ErrorHandler
 from src.utils.error_formatter import ErrorFormatter
+from src.utils.flow_visualizer import visualize_tac
 
 
 class CompilerCLI:
@@ -100,6 +101,10 @@ class CompilerCLI:
                                    default='examples/sample.src',
                                    help='要编译的源代码文件（默认：examples/sample.src）')
         compile_parser.add_argument('-o', '--output', help='输出文件路径（可选）')
+        compile_parser.add_argument('--cfg', action='store_true',
+                                   help='生成控制流图（每条指令一个节点）')
+        compile_parser.add_argument('--cfg-block', action='store_true',
+                                   help='生成控制流图（基本块模式）')
 
         # test-compiler 子命令：构建并测试生成的编译器
         test_parser = subparsers.add_parser(
@@ -267,6 +272,15 @@ class CompilerCLI:
                 self.logger.info("[完成] 语法分析完成")
                 self.logger.info("[完成] 中间代码生成完成（语法制导翻译）")
                 
+                # [智能提示] 检查并显示语义错误（如未定义变量）
+                if parser.has_semantic_errors():
+                    print("\n" + "=" * 60)
+                    print("[警告] 检测到语义问题（智能提示）")
+                    print("=" * 60)
+                    for error in parser.get_semantic_errors():
+                        print(error)
+                    print("=" * 60 + "\n")
+                
                 # [SDT] 从解析器中获取生成的中间代码
                 intermediate_code = parser.get_generated_code()
                 
@@ -297,6 +311,24 @@ class CompilerCLI:
             else:
                 print("\n=== 中间代码 ===")
                 print(intermediate_code)
+            
+            # 生成控制流图
+            if getattr(args, 'cfg', False) or getattr(args, 'cfg_block', False):
+                block_mode = getattr(args, 'cfg_block', False)
+                cfg_mermaid = visualize_tac(intermediate_code, block_mode=block_mode)
+                mode_name = "基本块模式" if block_mode else "指令模式"
+                print(f"\n=== 控制流图 ({mode_name}) ===")
+                print(cfg_mermaid)
+                
+                # 如果有输出文件，同时保存 .md 文件
+                if args.output:
+                    cfg_output = args.output.rsplit('.', 1)[0] + '_cfg.md'
+                    with open(cfg_output, 'w', encoding='utf-8') as f:
+                        f.write("# 控制流图\n\n")
+                        f.write("```mermaid\n")
+                        f.write(cfg_mermaid)
+                        f.write("\n```\n")
+                    self.logger.info(f"控制流图已保存到: {cfg_output}")
 
             self.logger.success("编译成功！")
             return 0
