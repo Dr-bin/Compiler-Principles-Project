@@ -663,7 +663,7 @@ class ParserGenerator:
                 node.synthesized_value = var_name
         
         # Factor -> 'LPAREN' Expr 'RPAREN'
-        elif symbol == 'Factor' and len(children) == 3 and children[0].name == "'LPAREN'":
+        elif symbol == 'Factor' and len(children) == 3 and children[0].name in ["'LPAREN'", "LPAREN"]:
             node.synthesized_value = children[1].synthesized_value
         
         # ====================================================================
@@ -688,9 +688,11 @@ class ParserGenerator:
                     var_name = children[0].synthesized_value
                     expr_val = children[2].synthesized_value
                     # [SDT] 立即生成赋值指令
-                    if var_name and expr_val:
-                        self.emit(f"{var_name} = {expr_val}")
+                    if var_name:
+                        # 即使 expr_val 为 None，也要注册变量
                         self.symbol_table[var_name] = {'type': 'var'}
+                        if expr_val:
+                            self.emit(f"{var_name} = {expr_val}")
         
         # WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
         elif symbol == 'WriteStmt' and len(children) >= 3:
