@@ -562,7 +562,8 @@ class ParserGenerator:
 
         if found_production is not None:
             children_nodes = []
-            if not found_production and self.epsilon_symbol in self._get_first_set_for_sequence(found_production):
+            # 处理空产生式（epsilon）
+            if not found_production or (found_production == []):
                 return ASTNode(name=symbol, children=[], token=None, synthesized_value=None)
             
             # 递归解析所有子符号
@@ -911,7 +912,9 @@ def create_parser_from_spec(grammar, start):
     return p
 
 
-def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str) -> str:
+def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str, 
+                        first_sets: Dict[str, Set[str]] = None, 
+                        follow_sets: Dict[str, Set[str]] = None) -> str:
     """生成支持SDT的语法分析器Python代码
 
     [SDT版本] 生成的解析器在解析过程中同时生成中间代码
@@ -935,6 +938,21 @@ def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str)
             grammar_dict_str += f"                [{prod_str}],\n"
         grammar_dict_str += "            ],\n"
     grammar_dict_str += "        }"
+    
+    # 序列化FIRST和FOLLOW集合
+    first_sets = first_sets or {}
+    follow_sets = follow_sets or {}
+    first_sets_str = "{\n"
+    for nt, first_set in first_sets.items():
+        first_list = sorted(list(first_set))
+        first_sets_str += f"            '{nt}': {{" + ", ".join([repr(t) for t in first_list]) + "},\n"
+    first_sets_str += "        }"
+    
+    follow_sets_str = "{\n"
+    for nt, follow_set in follow_sets.items():
+        follow_list = sorted(list(follow_set))
+        follow_sets_str += f"            '{nt}': {{" + ", ".join([repr(t) for t in follow_list]) + "},\n"
+    follow_sets_str += "        }"
 
     parser_code = f'''
 # =============================================================================
@@ -943,7 +961,7 @@ def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str)
 # =============================================================================
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Set
 
 @dataclass
 class ASTNode:
@@ -976,6 +994,11 @@ class GeneratedParser:
         self.pos = 0
         self.grammar = {grammar_dict_str}
         self.start_symbol = '{start_symbol}'
+        
+        # FIRST和FOLLOW集合（用于错误处理和空产生式判断）
+        self.first_sets = {first_sets_str}
+        self.follow_sets = {follow_sets_str}
+        self.epsilon_symbol = 'EPSILON'
         
         # [SDT] 代码生成相关
         self.code_buffer = []
@@ -1026,6 +1049,26 @@ class GeneratedParser:
             f"  Got: {{token.type}} (value: '{{token.value}}')"
         )
     
+    def _is_terminal(self, symbol: str) -> bool:
+        if symbol.startswith("'") and symbol.endswith("'"):
+            return True
+        return symbol in ['EOF']  # 基本终结符检查
+    
+    def _get_first_set_for_sequence(self, sequence: List[str]) -> Set[str]:
+        """计算符号序列的FIRST集"""
+        first_set = set()
+        for Y in sequence:
+            if self._is_terminal(Y):
+                token_type = Y[1:-1] if Y.startswith("'") else Y
+                first_set.add(token_type)
+                return first_set
+            else:
+                first_set.update(self.first_sets.get(Y, set()) - {{'EPSILON'}})
+                if 'EPSILON' not in self.first_sets.get(Y, set()):
+                    return first_set
+        first_set.add('EPSILON')
+        return first_set
+    
     def parse_symbol(self, symbol: str):
         # 终结符（带引号）[SDT: 设置综合属性]
         if symbol.startswith("'") and symbol.endswith("'"):
@@ -1037,33 +1080,54 @@ class GeneratedParser:
         
         # 非终结符 [SDT: 解析后立即生成代码]
         if symbol in self.grammar:
-            saved_pos = self.pos
-            for production in self.grammar[symbol]:
-                try:
-                    children = []
-                    for sym in production:
-                        child = self.parse_symbol(sym)
-                        children.append(child)
-                    
-                    node = ASTNode(name=symbol, children=children)
-                    
+            current_token_type = self.current_token().type
+            productions = self.grammar[symbol]
+            found_production = None
+            
+            # 使用FIRST集进行预测，选择匹配的产生式
+            if found_production is None:
+                for production in productions:
+                    production_first_set = self._get_first_set_for_sequence(production)
+                    if current_token_type in production_first_set:
+                        found_production = production
+                        break
+                    if 'EPSILON' in production_first_set:
+                        if current_token_type in self.follow_sets.get(symbol, set()):
+                            found_production = production
+                            break
+            
+            if found_production is not None:
+                # 处理空产生式（epsilon）
+                if not found_production or len(found_production) == 0:
+                    node = ASTNode(name=symbol, children=[])
                     # [SDT] 识别产生式后立即执行翻译动作
-                    self._apply_sdt_rules(symbol, production, node)
-                    
+                    if hasattr(self, '_apply_sdt_rules'):
+                        self._apply_sdt_rules(symbol, found_production, node)
                     return node
-                except SyntaxError:
-                    self.pos = saved_pos
-                    continue
-                except Exception:
-                    self.pos = saved_pos
-                    raise
+                
+                children = []
+                for sym in found_production:
+                    child = self.parse_symbol(sym)
+                    children.append(child)
+                
+                node = ASTNode(name=symbol, children=children)
+                
+                # [SDT] 识别产生式后立即执行翻译动作
+                if hasattr(self, '_apply_sdt_rules'):
+                    self._apply_sdt_rules(symbol, found_production, node)
+                
+                return node
             
             # 所有产生式都失败，生成详细的错误信息
             current = self.current_token()
             expected_tokens = []
             for prod in self.grammar[symbol]:
-                if prod and prod[0].startswith("'") and prod[0].endswith("'"):
+                if prod and len(prod) > 0 and prod[0].startswith("'") and prod[0].endswith("'"):
                     expected_tokens.append(prod[0][1:-1])
+            
+            # 如果符号可以为空，添加FOLLOW集
+            if self.epsilon_symbol in self.first_sets.get(symbol, set()):
+                expected_tokens.extend(list(self.follow_sets.get(symbol, set())))
             
             expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "unknown"
             raise SyntaxError(

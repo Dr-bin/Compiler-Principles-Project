@@ -323,9 +323,11 @@ def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: s
     # 执行 LL(1) 转换（消除左递归、左公因子）
     pg.build_analysis_sets()
 
-    # 获取优化后的文法，传给 generate_parser_code 得到源码
+    # 获取优化后的文法和分析集合，传给 generate_parser_code 得到源码
     optimized_grammar = pg.grammar
-    parser_code = generate_parser_code(optimized_grammar, start_symbol)
+    first_sets = pg.first_sets
+    follow_sets = pg.follow_sets
+    parser_code = generate_parser_code(optimized_grammar, start_symbol, first_sets, follow_sets)
 
     # --- 第二步：读取 ErrorFormatter 代码 ---
     error_formatter_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 

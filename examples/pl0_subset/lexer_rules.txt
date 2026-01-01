@@ -1,19 +1,25 @@
 # PL/0子集语言的词法规则
 
-# 关键字（这些必须在ID之前检查）
+# 关键字
+CONST = const
 VAR = var
+PROCEDURE = procedure
+CALL = call
 WHILE = while
 IF = if
 ELSE = else
 READ = read
 WRITE = write
+ODD = odd
+BEGIN = begin
+END = end
 
 # 逻辑运算符
 AND = and
 OR = or
 NOT = not
 
-# 标识符（在关键字之后检查）
+# 标识符
 ID = [a-zA-Z_][a-zA-Z0-9_]*
 
 # 数字

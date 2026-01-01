@@ -3,23 +3,25 @@
 
 var x, y, max, i;
 
-x = 3;
-y = 5;
+begin
+    x = 3;
+    y = 5;
 
-// if语句：设置初始值，如果条件满足则覆盖
-max = x;
-if (x < y) 
-    max = y;
+    // if语句：设置初始值，如果条件满足则覆盖
+    max = x;
+    if (x < y) 
+        max = y;
 
-write(max);
+    write(max);
 
-// while: 从 0 累加到 4
-i = 0;
-while (i < 5)
-{
-    write(i);
-    i = i + 1;
-}
+    // while: 从 0 累加到 4
+    i = 0;
+    while (i < 5)
+    {
+        write(i);
+        i = i + 1;
+    }
+end
 
 
 

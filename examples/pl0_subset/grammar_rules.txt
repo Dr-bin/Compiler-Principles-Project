@@ -1,58 +1,109 @@
-# PL/0子集语言的语法规则 (LL(1) 优化版)
+# PL/0标准语法规则 (原始形式，包含左公因子和左递归)
+# 参考：Niklaus Wirth的PL/0标准语法定义
+# 注意：if语句保持当前形式 if (condition) statement，其他按标准PL/0
 
-# 程序结构：程序由声明列表和语句列表组成
-Program -> DeclList StmtList
+# 程序结构：程序由一个块组成（标准PL/0以句点结尾，这里简化）
+Program -> Block
 
-# 声明列表：消除左公因子，使用尾部处理空产生式
-DeclList -> VarDecl DeclListTail | 
-DeclListTail -> VarDecl DeclListTail | 
+# 块：标准PL/0的block结构
+# block = [const-decl] [var-decl] {procedure-decl} statement
+# 标准PL/0形式：可选的const声明，可选的var声明，0个或多个procedure声明，然后是一个statement
+# 为了展示左公因子消除，这里列出所有可能的组合（会产生左公因子）
+# 注意：标准PL/0的block在LL(1)解析中会有冲突，这里采用更实用的形式
+# 通过明确的FIRST集区分：CONST开头、VAR开头、PROCEDURE开头、或直接是Stmt
+Block -> 'CONST' ConstList 'SEMI' BlockRest | 'VAR' IDList 'SEMI' BlockRest | 'PROCEDURE' 'ID' 'SEMI' Block 'SEMI' BlockRest | Stmt
+BlockRest -> 'VAR' IDList 'SEMI' ProcDeclList Stmt | ProcDeclList Stmt
+# 注意：BlockRest -> ProcDeclList Stmt中，ProcDeclList可以为空
+# 当ProcDeclList为空时，应该直接匹配Stmt，这通过FOLLOW集来处理
+# 注意：标准PL/0的block中，statement是单个语句
+# 如果需要多个语句，应该使用begin...end块或{...}块包裹
 
-# 变量声明：以VAR关键字开头，后跟标识符列表和分号
-VarDecl -> 'VAR' IDList 'SEMI'
+# 常量声明：const ident = number {, ident = number} ;
+# 标准PL/0形式
+ConstDecl -> 'CONST' ConstList 'SEMI' | 
 
-# 标识符列表：消除左公因子
+# 常量列表：包含左公因子（ConstItem是公共前缀）
+ConstList -> ConstItem ConstListTail
+ConstListTail -> 'COMMA' ConstItem ConstListTail | 
+
+# 常量项：ident = number
+ConstItem -> 'ID' 'ASSIGN' 'NUM'
+
+# 变量声明：var ident {, ident} ;
+# 标准PL/0形式
+VarDecl -> 'VAR' IDList 'SEMI' | 
+VarDeclOpt -> 'VAR' IDList 'SEMI' | 
+
+# 标识符列表：包含左公因子（'ID'是公共前缀）
 IDList -> 'ID' IDListTail
 IDListTail -> 'COMMA' 'ID' IDListTail | 
 
-# 语句列表：消除左公因子
+# 过程声明列表：{ procedure ident ; block ; }
+# 标准PL/0形式，可以出现0次或多次
+# 注意：在Block中，ProcDeclList通过'PROCEDURE'关键字明确识别
+ProcDeclList -> ProcDecl ProcDeclList |  
+
+# 过程声明：procedure ident ; block ;
+ProcDecl -> 'PROCEDURE' 'ID' 'SEMI' Block 'SEMI'
+
+# 语句：标准PL/0的statement
+# statement = ident := expression | call ident | ? ident | ! expression | begin statement {; statement} end | if condition then statement | while condition do statement
+# 注意：if语句保持当前形式 if (condition) statement
+# 同时支持 { } 块结构（非标准PL/0，但更常用）
+Stmt -> AssignStmt | CallStmt | ReadStmt | WriteStmt | BeginStmt | BlockStmt | IfStmt | WhileStmt
+
+# 赋值语句：ident := expression
+# 标准PL/0使用 :=，但这里保持 = 的形式
+# 注意：为了支持常见的编程语言格式（每个语句后都有分号），语句定义包含分号
+AssignStmt -> 'ID' 'ASSIGN' Expr 'SEMI'
+
+# 过程调用语句：call ident
+CallStmt -> 'CALL' 'ID' 'SEMI'
+
+# Read语句：? ident（标准PL/0形式，这里用read）
+ReadStmt -> 'READ' 'ID' 'SEMI'
+
+# Write语句：! expression（标准PL/0形式，这里用write）
+WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
+
+# Begin-End块：begin statement {; statement} end
+# 标准PL/0形式
+# 注意：为了支持常见的编程语言格式，每个语句后都有分号
+BeginStmt -> 'BEGIN' StmtList 'END'
+
+# 大括号块：{ statement {; statement} }（非标准PL/0，但更常用）
+BlockStmt -> 'LBRACE' StmtList 'RBRACE'
+
+# 语句列表：第一个语句，然后是可选的（分号+语句）序列
+# 注意：由于每个语句已经包含分号，StmtListTail直接连接语句即可
 StmtList -> Stmt StmtListTail
 StmtListTail -> Stmt StmtListTail | 
 
-# 语句类型：支持赋值语句、if语句、while语句、read语句、write语句和块
-Stmt -> AssignStmt | IfStmt | WhileStmt | ReadStmt | WriteStmt | Block
+# If语句：保持当前形式 if (condition) statement（非标准PL/0的if condition then statement）
+IfStmt -> 'IF' 'LPAREN' Condition 'RPAREN' Stmt
 
-# 赋值语句：标识符 = 表达式;
-AssignStmt -> 'ID' 'ASSIGN' Expr 'SEMI'
+# While语句：while condition do statement（标准PL/0形式，但这里用括号）
+WhileStmt -> 'WHILE' 'LPAREN' Condition 'RPAREN' Stmt
 
-# If语句：简化版本，不支持else（避免悬空else的LL(1)冲突）
-# 如需else，请使用Block包围: if (cond) { ... } else { ... } 形式
-IfStmt -> 'IF' 'LPAREN' BoolExpr 'RPAREN' Stmt
+# 条件表达式：标准PL/0的condition
+# condition = odd expression | expression relop expression
+Condition -> 'ODD' Expr | Expr RelOp Expr
 
-# While语句：while (条件) 语句
-WhileStmt -> 'WHILE' 'LPAREN' BoolExpr 'RPAREN' Stmt
-
-# Read语句：从输入读取值到变量
-ReadStmt -> 'READ' 'ID' 'SEMI'
-
-# Write语句：输出表达式的值
-WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
-
-# 块：由大括号包围的语句列表
-Block -> 'LBRACE' StmtList 'RBRACE'
-
-# 布尔表达式：表达式 关系操作符 表达式
-BoolExpr -> Expr RelOp Expr
-
-# 关系操作符：小于、小于等于、大于、大于等于、等于、不等于
+# 关系操作符：标准PL/0的关系运算符
 RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
 
-# 表达式：消除左公因子
-Expr -> Term ExprTail
-ExprTail -> 'PLUS' Term ExprTail | 'MINUS' Term ExprTail | 
+# 表达式：标准PL/0的expression（左递归形式）
+# expression = [+|-] term {(+|-) term}
+# 标准PL/0的左递归形式：Expr -> Expr '+' Term | Expr '-' Term | Term
+# 同时支持可选的+/-前缀（产生左公因子）
+Expr -> 'PLUS' Term | 'MINUS' Term | Term | Expr 'PLUS' Term | Expr 'MINUS' Term 
 
-# 项：消除左公因子
-Term -> Factor TermTail
-TermTail -> 'MUL' Factor TermTail | 'DIV' Factor TermTail | 
+# 项：标准PL/0的term（左递归形式）
+# term = factor {(*|/) factor}
+# 标准PL/0的左递归形式：Term -> Term '*' Factor | Term '/' Factor | Factor
+# 包含左递归和左公因子
+Term -> Term 'MUL' Factor | Term 'DIV' Factor | Factor 
 
-# 因子：可以是数字、标识符或括号包围的表达式
-Factor -> 'NUM' | 'ID' | 'LPAREN' Expr 'RPAREN'
+# 因子：标准PL/0的factor
+# factor = ident | number | ( expression )
+Factor -> 'ID' | 'NUM' | 'LPAREN' Expr 'RPAREN'
