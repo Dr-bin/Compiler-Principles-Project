@@ -56,10 +56,11 @@ class ParserGenerator:
     - 实现真正的一遍扫描编译
     """
 
-    def __init__(self, enable_sdt: bool = True):
+    def __init__(self, lexer_rules: List[Tuple[str, str]] = None, enable_sdt: bool = True):
         """初始化解析器
         
         参数:
+            lexer_rules: 词法规则列表 [(token_type, regex_pattern), ...]（用于消除硬编码）
             enable_sdt: 是否启用语法制导翻译（默认启用）
         """
         self.grammar: Dict[str, List[List[str]]] = {}
@@ -85,7 +86,68 @@ class ParserGenerator:
         self.enable_variable_check = True  # 是否启用变量检查
         self.semantic_errors: List[str] = []  # 收集语义错误
         self.requires_explicit_declaration = False  # 是否需要显式声明（PL/0需要，Simple不需要）
+        
+        # [消除硬编码] 从词法规则中提取token分类
+        self.lexer_rules = lexer_rules or []
+        self.all_token_types: Set[str] = set()  # 所有token类型
+        self.identifier_tokens: Set[str] = set()  # 标识符token类型（如ID、VARIABLE等）
+        self.number_tokens: Set[str] = set()  # 数字token类型（如NUM、NUMBER、INT等）
+        self.operator_tokens: Set[str] = set()  # 操作符token类型（如PLUS、MINUS等）
+        self.keyword_tokens: Set[str] = set()  # 关键字token类型（如IF、WHILE等）
+        self.punctuation_tokens: Set[str] = set()  # 标点符号token类型（如LPAREN、SEMI等）
+        
+        # 从词法规则中提取token分类
+        if lexer_rules:
+            self._extract_token_categories_from_lexer_rules()
 
+    def _extract_token_categories_from_lexer_rules(self):
+        """从词法规则中提取token分类（消除硬编码）
+        
+        通过正则表达式模式识别token的语义类别：
+        - 标识符：匹配标识符模式的token（如 [a-zA-Z_][a-zA-Z0-9_]*）
+        - 数字：匹配数字模式的token（如 [0-9]+）
+        - 操作符：单字符或符号模式（如 +、-、*、/）
+        - 关键字：固定字符串模式（如 if、while、read）
+        - 标点：括号、分号、逗号等
+        """
+        import re
+        
+        for token_type, pattern in self.lexer_rules:
+            self.all_token_types.add(token_type)
+            
+            # 识别标识符token（正则表达式包含字母和下划线的模式）
+            if re.search(r'\[a-zA-Z_\].*\[a-zA-Z0-9_\]', pattern):
+                self.identifier_tokens.add(token_type)
+            
+            # 识别数字token（正则表达式匹配数字模式）
+            elif re.search(r'\[0-9\]', pattern) or pattern in ['[0-9]+', r'\d+']:
+                self.number_tokens.add(token_type)
+            
+            # 识别关键字token（固定字符串，且是字母）
+            elif re.match(r'^[a-zA-Z]+$', pattern):
+                self.keyword_tokens.add(token_type)
+            
+            # 识别括号和标点符号
+            elif pattern in ['(', ')', r'\(', r'\)', '{', '}', r'\{', r'\}', '[', ']', r'\[', r'\]', 
+                            ';', ',', ':', '.', r'\;', r'\,', r'\:','\.']:
+                self.punctuation_tokens.add(token_type)
+            
+            # 识别操作符（算术、比较、逻辑等）
+            elif pattern in ['+', '-', '*', '/', '%', r'\+', r'-', r'\*', r'\/', r'\%',
+                           '=', '==', '!=', '<', '>', '<=', '>=', 
+                           r'\=', r'\=\=', r'\!\=', r'\<', r'\>', r'\<\=', r'\>\=',
+                           '&', '|', '!', '&&', '||', r'\&', r'\|', r'\!', r'\&\&', r'\|\|']:
+                self.operator_tokens.add(token_type)
+            
+            # 其他未分类的token，默认为操作符（除非是已知的标点）
+            else:
+                # 如果包含特殊字符，可能是操作符
+                if any(c in pattern for c in ['+', '-', '*', '/', '=', '<', '>', '!', '&', '|', '%']):
+                    self.operator_tokens.add(token_type)
+                # 否则可能是标点或其他
+                else:
+                    self.punctuation_tokens.add(token_type)
+    
     def _compute_first_sets(self):
         """[算法核心] 迭代计算所有符号的 FIRST 集合。"""
         self.first_sets = {}
@@ -586,6 +648,61 @@ class ParserGenerator:
                 expected.update(self.follow_sets.get(symbol, set()))
             raise ParseError(f"Syntax Error: Expected one of {expected}")
     
+    def _is_identifier_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是标识符token（消除硬编码）
+        
+        参数:
+            prod_symbol: 产生式中的符号（如 "'ID'"）
+            
+        返回:
+            True 如果是标识符token，False 否则
+        """
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.identifier_tokens
+    
+    def _is_number_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是数字token（消除硬编码）"""
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.number_tokens
+    
+    def _is_keyword_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是关键字token（消除硬编码）"""
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.keyword_tokens
+    
+    def _is_punctuation_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是标点token（消除硬编码）"""
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.punctuation_tokens
+    
+    def _is_operator_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是操作符token（消除硬编码）"""
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.operator_tokens
+    
+    def _get_token_type_from_production(self, prod_symbol: str) -> Optional[str]:
+        """从产生式符号中提取token类型
+        
+        参数:
+            prod_symbol: 产生式中的符号（如 "'ID'"）
+            
+        返回:
+            token类型名称（如 "ID"），如果不是终结符则返回None
+        """
+        if prod_symbol.startswith("'") and prod_symbol.endswith("'"):
+            return prod_symbol[1:-1]
+        return None
+    
     def _is_binary_operator_by_structure(self, production: List[str], op_index: int) -> bool:
         """通过产生式结构识别二元运算符（完全不硬编码token类型）
         
@@ -674,9 +791,21 @@ class ParserGenerator:
         # 1. 表达式和算术运算（直接检查产生式内容）
         # ====================================================================
         
-        # 单个子节点（传递值）
-        if len(production) == 1:
-            node.synthesized_value = children[0].synthesized_value
+        # 单个终结符产生式：通过token对象的type属性识别，而不是硬编码字符串
+        if len(production) == 1 and production[0].startswith("'"):
+            # 获取token对象（从属性中获取，不硬编码）
+            token = children[0].token if children[0].token else None
+            value = children[0].synthesized_value
+            
+            # 通过token.type属性识别标识符（从token对象获取，不是硬编码字符串）
+            # 只有标识符类型才需要检查变量定义（修复：不检查操作符、关键字、标点）
+            if token and hasattr(token, 'type') and self.enable_variable_check:
+                # 消除硬编码：只检查标识符类型的token
+                if token.type in self.identifier_tokens:
+                    if value and value not in self.symbol_table:
+                        self.check_variable_defined(value, token)
+            
+            node.synthesized_value = value
         
         # 表达式尾部（处理加减法）：通过结构识别（第一个是表达式，第二个是尾部）
         # 尾部可能是：操作符 + 操作数 + 尾部，或单个操作节点
@@ -693,28 +822,23 @@ class ParserGenerator:
             tail_val = self._process_term_tail(children[1], left_val)
             node.synthesized_value = tail_val
         
-        # 因子 - 数字：'NUM'
-        elif len(production) == 1 and production[0] == "'NUM'":
+        # 单个子节点（传递值）- 通用情况
+        elif len(production) == 1:
             node.synthesized_value = children[0].synthesized_value
-        
-        # 因子 - 标识符：'ID'
-        elif len(production) == 1 and production[0] == "'ID'":
-            var_name = children[0].synthesized_value
-            # [智能提示] 检查变量是否已定义
-            if var_name and self.enable_variable_check:
-                self.check_variable_defined(var_name, children[0].token)
-            node.synthesized_value = var_name
         
         # 括号表达式：'LPAREN' Expr 'RPAREN'
         elif len(production) == 3 and production[0] == "'LPAREN'" and production[2] == "'RPAREN'":
             node.synthesized_value = children[1].synthesized_value
         
         # ====================================================================
-        # 2. 语句处理（直接检查产生式内容，LL(1)已经识别了产生式）
+        # 2. 语句处理（消除硬编码，通过词法规则动态识别）
         # ====================================================================
         
-        # 赋值语句：'ID' 'ASSIGN' Expr 'SEMI'
-        elif len(production) >= 3 and production[0] == "'ID'" and production[1] == "'ASSIGN'":
+        # 赋值语句：identifier_token assignment_token Expr ...
+        # 通过结构识别：第一个是标识符token，第二个是操作符token（赋值）
+        elif (len(production) >= 3 and 
+              self._is_identifier_token_in_production(production[0]) and 
+              self._is_operator_token_in_production(production[1])):
             var_name = children[0].synthesized_value
             expr_val = children[2].synthesized_value
             if var_name:
@@ -729,17 +853,21 @@ class ParserGenerator:
         
         # 输出语句：通过产生式结构识别（关键字 'LPAREN' Expr 'RPAREN'模式）
         # 模式：第一个是关键字（终结符），第二个是'LPAREN'，第三个是表达式（非终结符）
-        # 完全通过产生式结构识别，不硬编码token类型
-        elif len(production) >= 4 and production[0].startswith("'") and production[1] == "'LPAREN'" and not production[2].startswith("'"):
+        # 消除硬编码，通过词法规则动态识别
+        elif len(production) >= 4 and production[0].startswith("'") and production[1].startswith("'") and not production[2].startswith("'"):
             # 通过产生式结构识别：如果是关键字结构，则处理输出语句
-            if self._is_keyword_by_structure(production, 0):
+            if (self._is_keyword_token_in_production(production[0]) and 
+                self._is_punctuation_token_in_production(production[1])):  # LPAREN等
                 expr_val = children[2].synthesized_value
                 if expr_val:
                     self.emit(f"param {expr_val}")
                     self.emit(f"call write, 1")
         
-        # 输入语句：'READ' 'ID' 'SEMI'
-        elif len(production) >= 2 and production[0] == "'READ'" and production[1] == "'ID'":
+        # 输入语句：keyword_token identifier_token ...
+        # 通过结构识别：第一个是关键字，第二个是标识符（消除硬编码）
+        elif (len(production) >= 2 and 
+              self._is_keyword_token_in_production(production[0]) and 
+              self._is_identifier_token_in_production(production[1])):
             var_name = children[1].synthesized_value
             if var_name:
                 temp = self.new_temp()
@@ -747,11 +875,14 @@ class ParserGenerator:
                 self.emit(f"{var_name} = {temp}")
         
         # ====================================================================
-        # 3. 控制流语句（直接检查产生式内容）
+        # 3. 控制流语句（消除硬编码，通过词法规则动态识别）
         # ====================================================================
         
-        # while循环：'WHILE' 'LPAREN' Condition 'RPAREN' Stmt
-        elif len(production) >= 5 and production[0] == "'WHILE'" and production[1] == "'LPAREN'":
+        # while循环：keyword_token punctuation_token Condition punctuation_token Stmt
+        # 通过结构识别：关键字 + '(' + 条件 + ')' + 语句（消除硬编码）
+        elif (len(production) >= 5 and 
+              self._is_keyword_token_in_production(production[0]) and 
+              self._is_punctuation_token_in_production(production[1])):
             loop_label = self.new_label()
             exit_label = self.new_label()
             self.emit(f"{loop_label}:")
@@ -763,8 +894,12 @@ class ParserGenerator:
             self.emit(f"goto {loop_label}")
             self.emit(f"{exit_label}:")
         
-        # if语句：'IF' 'LPAREN' Condition 'RPAREN' Stmt
-        elif len(production) >= 5 and production[0] == "'IF'" and production[1] == "'LPAREN'":
+        # if语句：keyword_token punctuation_token Condition punctuation_token Stmt
+        # 通过结构识别：关键字 + '(' + 条件 + ')' + 语句（消除硬编码）
+        elif (len(production) >= 5 and 
+              self._is_keyword_token_in_production(production[0]) and 
+              self._is_punctuation_token_in_production(production[1]) and
+              len(production) < 6):  # if语句通常是5个元素，while也是，但这里通过位置区分
             bool_val = children[2].synthesized_value
             exit_label = self.new_label()
             if bool_val:
@@ -790,34 +925,34 @@ class ParserGenerator:
                         node.synthesized_value = temp
         
         # 关系运算符（单个token）：通过结构识别（单个终结符）
-        # 模式：单个终结符，且不是常见的非操作符token
+        # 模式：单个终结符，且是操作符token（消除硬编码排除列表）
         elif len(production) == 1 and production[0].startswith("'"):
-            op_token_type = production[0][1:-1]
-            # 排除已知的非操作符token类型
-            # 如果是操作符（不是标识符、数字、括号、分号、赋值、逗号等），传递值
-            if op_token_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL']:
+            # 消除硬编码：通过词法规则动态识别操作符
+            if self._is_operator_token_in_production(production[0]):
                 node.synthesized_value = children[0].synthesized_value
         
         # ====================================================================
-        # 4. 变量声明列表（通过产生式结构识别）
+        # 4. 变量声明列表（消除硬编码，通过词法规则动态识别）
         # ====================================================================
-        # 变量声明列表：'ID' ... （第一个是ID，第二个是非终结符，且可能包含COMMA模式）
-        elif len(production) >= 2 and production[0] == "'ID'" and not production[1].startswith("'"):
+        # 变量声明列表：identifier_token ... （第一个是标识符，第二个是非终结符）
+        elif (len(production) >= 2 and 
+              self._is_identifier_token_in_production(production[0]) and 
+              not production[1].startswith("'")):
             # 收集所有声明的变量并添加到符号表
-            # 模式：'ID' Tail，其中Tail可能是 'COMMA' 'ID' Tail | ε
+            # 模式：identifier_token Tail，其中Tail可能是 punctuation_token identifier_token Tail | ε
             def collect_ids_from_tail(tail_node):
-                """递归收集尾部的所有变量名（通过结构识别：COMMA ID ...）"""
+                """递归收集尾部的所有变量名（消除硬编码，通过词法规则动态识别）"""
                 var_names = []
                 if not tail_node or not tail_node.children:
                     return var_names
                 
-                # 检查是否是 'COMMA' 'ID' ... 模式
+                # 检查是否是 punctuation_token identifier_token ... 模式
                 if len(tail_node.children) >= 2:
                     comma_node = tail_node.children[0]
                     id_node = tail_node.children[1]
-                    # 通过token类型判断，而不是节点名称
-                    if comma_node.token and comma_node.token.type == 'COMMA':
-                        if id_node.token and id_node.token.type == 'ID':
+                    # 通过词法规则判断，而不是硬编码token类型名称
+                    if comma_node.token and comma_node.token.type in self.punctuation_tokens:
+                        if id_node.token and id_node.token.type in self.identifier_tokens:
                             var_name = id_node.synthesized_value
                             if var_name:
                                 var_names.append(var_name)
@@ -830,8 +965,8 @@ class ParserGenerator:
                 
                 return var_names
             
-            # 处理第一个ID（通过token类型判断）
-            if children[0].token and children[0].token.type == 'ID':
+            # 处理第一个identifier（消除硬编码，通过词法规则动态识别）
+            if children[0].token and children[0].token.type in self.identifier_tokens:
                 var_name = children[0].synthesized_value
                 if var_name:
                     self.symbol_table[var_name] = {'type': 'var'}
@@ -865,30 +1000,25 @@ class ParserGenerator:
                 first_child = children[0].children[0]
                 if first_child.token:
                     op_type = first_child.token.type
-                    # 通过结构识别：第一个是操作符，第二个是操作数
-                    # 检查是否是算术运算符（排除非操作符token）
-                    if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
-                        # 可能是加减运算符
-                        if op_type in ['PLUS', 'MINUS']:
-                            return self._process_add_op(children[0], left_val)
+                    # 消除硬编码：通过词法规则动态识别操作符
+                    if op_type in self.operator_tokens:
+                        return self._process_add_op(children[0], left_val)
         
         # 格式2: 直接包含操作符的结构（未优化的文法）
-        # 通过结构识别：第一个是操作符token，第二个是操作数
+        # 通过结构识别：第一个是操作符token，第二个是操作数（消除硬编码）
         if children and children[0].token and len(children) >= 2:
             op_type = children[0].token.type
-            # 检查是否是算术运算符（排除非操作符token）
-            if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
-                # 检查是否是已知的算术运算符
-                if op_type in ['PLUS', 'MINUS']:
-                    op = children[0].synthesized_value
-                    right_val = children[1].synthesized_value if len(children) > 1 else None
-                    if op and right_val:
-                        temp = self.new_temp()
-                        self.emit(f"{temp} = {left_val} {op} {right_val}")
-                        # 递归处理剩余的ExprTail
-                        if len(children) > 2 and children[2].children:
-                            return self._process_expr_tail(children[2], temp)
-                        return temp
+            # 消除硬编码：通过词法规则动态识别操作符
+            if op_type in self.operator_tokens:
+                op = children[0].synthesized_value
+                right_val = children[1].synthesized_value if len(children) > 1 else None
+                if op and right_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {left_val} {op} {right_val}")
+                    # 递归处理剩余的ExprTail
+                    if len(children) > 2 and children[2].children:
+                        return self._process_expr_tail(children[2], temp)
+                    return temp
         
         return left_val
     
@@ -905,81 +1035,75 @@ class ParserGenerator:
         
         if len(children) >= 2:
             # children[0]是操作符，children[1]是操作数，children[2]可能是递归尾部
-            # 通过token类型判断操作符
+            # 消除硬编码：通过词法规则动态识别操作符
             if children[0].token:
                 op_type = children[0].token.type
-                # 检查是否是加减运算符（排除非操作符token）
-                if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
-                    if op_type in ['PLUS', 'MINUS']:
-                        op = children[0].synthesized_value
-                        right_val = children[1].synthesized_value
-                        if op and right_val:
-                            temp = self.new_temp()
-                            self.emit(f"{temp} = {left_val} {op} {right_val}")
-                            # 检查是否还有递归的操作节点（通过结构识别：单个子节点且是操作节点）
-                            if len(children) > 2:
-                                tail = children[2]
-                                if tail.children and len(tail.children) == 1:
-                                    tail_child = tail.children[0]
-                                    # 检查是否是操作节点结构（操作符 + 操作数）
-                                    if tail_child.children and len(tail_child.children) >= 2:
-                                        if tail_child.children[0].token:
-                                            tail_op_type = tail_child.children[0].token.type
-                                            if tail_op_type in ['PLUS', 'MINUS']:
-                                                return self._process_add_op(tail_child, temp)
-                            return temp
+                # 消除硬编码：通过词法规则识别操作符token
+                if op_type in self.operator_tokens:
+                    op = children[0].synthesized_value
+                    right_val = children[1].synthesized_value
+                    if op and right_val:
+                        temp = self.new_temp()
+                        self.emit(f"{temp} = {left_val} {op} {right_val}")
+                        # 检查是否还有递归的操作节点（通过结构识别）
+                        if len(children) > 2:
+                            tail = children[2]
+                            if tail.children and len(tail.children) == 1:
+                                tail_child = tail.children[0]
+                                # 检查是否是操作节点结构（操作符 + 操作数）
+                                if tail_child.children and len(tail_child.children) >= 2:
+                                    if tail_child.children[0].token:
+                                        tail_op_type = tail_child.children[0].token.type
+                                        if tail_op_type in self.operator_tokens:
+                                            return self._process_add_op(tail_child, temp)
+                        return temp
         return left_val
     
     def _process_term_tail(self, tail_node: ASTNode, left_val: str) -> str:
-        """处理项尾部（乘除法）- SDT辅助方法
+        """处理项尾部（乘除法）- SDT辅助方法（消除硬编码）
         
         支持两种文法格式：
         1. simple_expr: Term_LF_TAIL_X -> MulOp
-        2. PL/0: TermTail -> 'MUL'/'DIV' Factor TermTail
+        2. PL/0: TermTail -> operator_token Factor TermTail
         """
         if not tail_node or not tail_node.children:
             return left_val
         
         children = tail_node.children
         
-        # 格式1: 单个子节点，且是操作节点（通过结构识别）
+        # 格式1: 单个子节点，且是操作节点（通过结构识别，消除硬编码）
         # 模式：单个子节点，且该子节点有至少2个子节点（操作符 + 操作数）
         if len(children) == 1 and children[0].children:
             if len(children[0].children) >= 2:
                 first_child = children[0].children[0]
                 if first_child.token:
                     op_type = first_child.token.type
-                    # 通过结构识别：第一个是操作符，第二个是操作数
-                    # 检查是否是算术运算符（排除非操作符token）
-                    if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
-                        # 可能是乘除运算符
-                        if op_type in ['MUL', 'DIV']:
-                            return self._process_mul_op(children[0], left_val)
+                    # 消除硬编码：通过词法规则动态识别操作符
+                    if op_type in self.operator_tokens:
+                        return self._process_mul_op(children[0], left_val)
         
-        # 格式2: 直接包含操作符的结构（未优化的文法）
+        # 格式2: 直接包含操作符的结构（未优化的文法，消除硬编码）
         # 通过结构识别：第一个是操作符token，第二个是操作数
         if children and children[0].token and len(children) >= 2:
             op_type = children[0].token.type
-            # 检查是否是算术运算符（排除非操作符token）
-            if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
-                # 检查是否是已知的算术运算符
-                if op_type in ['MUL', 'DIV']:
-                    op = children[0].synthesized_value
-                    right_val = children[1].synthesized_value if len(children) > 1 else None
-                    if op and right_val:
-                        temp = self.new_temp()
-                        self.emit(f"{temp} = {left_val} {op} {right_val}")
-                        # 递归处理剩余的TermTail
-                        if len(children) > 2 and children[2].children:
-                            return self._process_term_tail(children[2], temp)
-                        return temp
+            # 消除硬编码：通过词法规则动态识别操作符
+            if op_type in self.operator_tokens:
+                op = children[0].synthesized_value
+                right_val = children[1].synthesized_value if len(children) > 1 else None
+                if op and right_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {left_val} {op} {right_val}")
+                    # 递归处理剩余的TermTail
+                    if len(children) > 2 and children[2].children:
+                        return self._process_term_tail(children[2], temp)
+                    return temp
         
         return left_val
     
     def _process_mul_op(self, mul_op_node: ASTNode, left_val: str) -> str:
-        """处理MulOp节点
+        """处理MulOp节点（消除硬编码）
         
-        MulOp结构: MulOp -> 'MUL'/'DIV' Factor MulOp_LF_TAIL_X
+        MulOp结构: MulOp -> operator_token Factor MulOp_LF_TAIL_X
         """
         if not mul_op_node or not mul_op_node.children:
             return left_val
@@ -989,29 +1113,28 @@ class ParserGenerator:
         
         if len(children) >= 2:
             # children[0]是操作符，children[1]是操作数，children[2]可能是递归尾部
-            # 通过token类型判断操作符
+            # 消除硬编码：通过词法规则动态识别操作符
             if children[0].token:
                 op_type = children[0].token.type
-                # 检查是否是乘除运算符（排除非操作符token）
-                if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
-                    if op_type in ['MUL', 'DIV']:
-                        op = children[0].synthesized_value
-                        right_val = children[1].synthesized_value
-                        if op and right_val:
-                            temp = self.new_temp()
-                            self.emit(f"{temp} = {left_val} {op} {right_val}")
-                            # 检查是否还有递归的操作节点（通过结构识别：单个子节点且是操作节点）
-                            if len(children) > 2:
-                                tail = children[2]
-                                if tail.children and len(tail.children) == 1:
-                                    tail_child = tail.children[0]
-                                    # 检查是否是操作节点结构（操作符 + 操作数）
-                                    if tail_child.children and len(tail_child.children) >= 2:
-                                        if tail_child.children[0].token:
-                                            tail_op_type = tail_child.children[0].token.type
-                                            if tail_op_type in ['MUL', 'DIV']:
-                                                return self._process_mul_op(tail_child, temp)
-                            return temp
+                # 消除硬编码：通过词法规则识别操作符token
+                if op_type in self.operator_tokens:
+                    op = children[0].synthesized_value
+                    right_val = children[1].synthesized_value
+                    if op and right_val:
+                        temp = self.new_temp()
+                        self.emit(f"{temp} = {left_val} {op} {right_val}")
+                        # 检查是否还有递归的操作节点（通过结构识别）
+                        if len(children) > 2:
+                            tail = children[2]
+                            if tail.children and len(tail.children) == 1:
+                                tail_child = tail.children[0]
+                                # 检查是否是操作节点结构（操作符 + 操作数）
+                                if tail_child.children and len(tail_child.children) >= 2:
+                                    if tail_child.children[0].token:
+                                        tail_op_type = tail_child.children[0].token.type
+                                        if tail_op_type in self.operator_tokens:
+                                            return self._process_mul_op(tail_child, temp)
+                        return temp
         return left_val
 
     def parse(self, tokens: List[Token]) -> ASTNode:
@@ -1043,8 +1166,16 @@ class ParserGenerator:
         return self.grammar.copy()
 
 
-def create_parser_from_spec(grammar, start, metadata: Dict = None):
-    p = ParserGenerator()
+def create_parser_from_spec(grammar, start, lexer_rules: List[Tuple[str, str]] = None, metadata: Dict = None):
+    """创建解析器（消除硬编码版本）
+    
+    参数:
+        grammar: 语法规则
+        start: 开始符号
+        lexer_rules: 词法规则列表（用于消除硬编码）
+        metadata: 元数据
+    """
+    p = ParserGenerator(lexer_rules=lexer_rules)
     p.set_start_symbol(start)
     for k, v in grammar.items():
         for prod in v: p.add_production(k, prod)
@@ -1057,17 +1188,22 @@ def create_parser_from_spec(grammar, start, metadata: Dict = None):
 def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str, 
                         first_sets: Dict[str, Set[str]] = None, 
                         follow_sets: Dict[str, Set[str]] = None,
+                        lexer_rules: List[Tuple[str, str]] = None,
                         metadata: Dict = None) -> str:
-    """生成支持SDT的语法分析器Python代码
+    """生成支持SDT的语法分析器Python代码（消除硬编码版本）
 
     [SDT版本] 生成的解析器在解析过程中同时生成中间代码
 
     参数:
         grammar: 文法规则字典 {非终结符: [[产生式1], [产生式2], ...]}
         start_symbol: 开始符号
+        first_sets: FIRST集合（可选）
+        follow_sets: FOLLOW集合（可选）
+        lexer_rules: 词法规则列表（用于消除硬编码）
+        metadata: 元数据
 
     返回:
-        包含完整语法分析器的Python代码字符串（支持SDT）
+        包含完整语法分析器的Python代码字符串（支持SDT，消除硬编码）
     """
     # 序列化文法
     grammar_dict_str = "{\n"
@@ -1096,6 +1232,14 @@ def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str,
         follow_list = sorted(list(follow_set))
         follow_sets_str += f"            '{nt}': {{" + ", ".join([repr(t) for t in follow_list]) + "},\n"
     follow_sets_str += "        }"
+    
+    # 序列化词法规则（用于消除硬编码）
+    lexer_rules_str = "[\n"
+    if lexer_rules:
+        for token_type, pattern in lexer_rules:
+            escaped_pattern = pattern.replace("'", "\\'")
+            lexer_rules_str += f"            ('{token_type}', r'{escaped_pattern}'),\n"
+    lexer_rules_str += "        ]"
     
     # 从元数据中获取语言特性配置
     require_explicit = False
@@ -1132,7 +1276,7 @@ class ASTNode:
         return result
 
 class GeneratedParser:
-    """自动生成的语法分析器 [SDT版本]
+    """自动生成的语法分析器 [SDT版本 - 消除硬编码]
     
     在解析过程中同时进行代码生成
     """
@@ -1158,6 +1302,49 @@ class GeneratedParser:
         self.requires_explicit_declaration = {require_explicit}
         self.enable_variable_check = True
         self.semantic_errors = []
+        
+        # [消除硬编码] 从词法规则中提取token分类
+        self.lexer_rules = {lexer_rules_str}
+        self.all_token_types = set()
+        self.identifier_tokens = set()
+        self.number_tokens = set()
+        self.operator_tokens = set()
+        self.keyword_tokens = set()
+        self.punctuation_tokens = set()
+        
+        # 从词法规则中提取token分类
+        if self.lexer_rules:
+            self._extract_token_categories()
+    
+    # [消除硬编码] 从词法规则中提取token分类
+    def _extract_token_categories(self):
+        """从词法规则中提取token分类（消除硬编码）"""
+        import re
+        
+        for token_type, pattern in self.lexer_rules:
+            self.all_token_types.add(token_type)
+            
+            # 识别标识符token
+            if re.search(r'\\[a-zA-Z_\\].*\\[a-zA-Z0-9_\\]', pattern):
+                self.identifier_tokens.add(token_type)
+            # 识别数字token
+            elif re.search(r'\\[0-9\\]', pattern) or pattern in ['[0-9]+', r'\\d+']:
+                self.number_tokens.add(token_type)
+            # 识别关键字token
+            elif re.match(r'^[a-zA-Z]+$', pattern):
+                self.keyword_tokens.add(token_type)
+            # 识别标点符号
+            elif pattern in ['(', ')', '{{', '}}', '[', ']', ';', ',', ':', '.']:
+                self.punctuation_tokens.add(token_type)
+            # 识别操作符
+            elif pattern in ['+', '-', '*', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&', '|', '!', '&&', '||']:
+                self.operator_tokens.add(token_type)
+            else:
+                # 其他未分类的token
+                if any(c in pattern for c in ['+', '-', '*', '/', '=', '<', '>', '!', '&', '|', '%']):
+                    self.operator_tokens.add(token_type)
+                else:
+                    self.punctuation_tokens.add(token_type)
     
     # [SDT] 代码生成辅助方法
     def new_temp(self):
@@ -1179,6 +1366,26 @@ class GeneratedParser:
         self.temp_counter = 0
         self.label_counter = 0
         self.symbol_table = {{}}
+    
+    def _is_identifier_token(self, token_type: str) -> bool:
+        """判断token类型是否是标识符（消除硬编码）"""
+        return token_type in self.identifier_tokens
+    
+    def _is_number_token(self, token_type: str) -> bool:
+        """判断token类型是否是数字（消除硬编码）"""
+        return token_type in self.number_tokens
+    
+    def _is_operator_token(self, token_type: str) -> bool:
+        """判断token类型是否是操作符（消除硬编码）"""
+        return token_type in self.operator_tokens
+    
+    def _is_keyword_token(self, token_type: str) -> bool:
+        """判断token类型是否是关键字（消除硬编码）"""
+        return token_type in self.keyword_tokens
+    
+    def _is_punctuation_token(self, token_type: str) -> bool:
+        """判断token类型是否是标点（消除硬编码）"""
+        return token_type in self.punctuation_tokens
     
     def current_token(self):
         if self.pos < len(self.tokens):
@@ -1367,9 +1574,21 @@ class GeneratedParser:
         """应用SDT规则：根据产生式生成代码（基于属性文法，不硬编码token类型）"""
         children = node.children
         
-        # 单个子节点（传递值）
-        if len(production) == 1:
-            node.synthesized_value = children[0].synthesized_value
+        # 单个终结符产生式：通过token对象的type属性识别（消除硬编码）
+        if len(production) == 1 and production[0].startswith("'"):
+            # 获取token对象（从属性中获取，不硬编码）
+            token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
+            value = children[0].synthesized_value
+            
+            # 通过token.type属性识别标识符（从词法规则中提取，不硬编码）
+            # 修复：只有标识符类型才需要检查变量定义
+            if token and hasattr(token, 'type') and self.enable_variable_check:
+                # 消除硬编码：只检查标识符类型的token
+                if token.type in self.identifier_tokens:
+                    if value and value not in self.symbol_table:
+                        self.check_variable_defined(value, token)
+            
+            node.synthesized_value = value
         
         # 表达式尾部（处理加减法）：Term ExprTail 或 Term Expr_LF_TAIL_X
         elif len(production) == 2 and not production[0].startswith("'") and not production[1].startswith("'"):
@@ -1377,25 +1596,18 @@ class GeneratedParser:
             tail_val = self._handle_tail(children[1], left_val)
             node.synthesized_value = tail_val
         
-        # 因子 - 数字：'NUM'
-        elif len(production) == 1 and production[0] == "'NUM'":
+        # 单个子节点（传递值）- 通用情况，放在最后
+        elif len(production) == 1:
             node.synthesized_value = children[0].synthesized_value
-        
-        # 因子 - 标识符：'ID'
-        elif len(production) == 1 and production[0] == "'ID'":
-            var_name = children[0].synthesized_value
-            # [智能提示] 检查变量是否已定义
-            if var_name and self.enable_variable_check:
-                token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
-                self.check_variable_defined(var_name, token)
-            node.synthesized_value = var_name
         
         # 括号表达式：'LPAREN' Expr 'RPAREN'
         elif len(production) == 3 and production[0] == "'LPAREN'" and production[2] == "'RPAREN'":
             node.synthesized_value = children[1].synthesized_value
         
-        # 赋值语句：'ID' 'ASSIGN' Expr 'SEMI'
-        elif len(production) >= 3 and production[0] == "'ID'" and production[1] == "'ASSIGN'":
+        # 赋值语句：identifier_token operator_token Expr ...（消除硬编码）
+        elif (len(production) >= 3 and 
+              production[0].startswith("'") and production[0][1:-1] in self.identifier_tokens and
+              production[1].startswith("'") and production[1][1:-1] in self.operator_tokens):
             var_name = children[0].synthesized_value
             expr_val = children[2].synthesized_value
             if var_name:
@@ -1408,44 +1620,49 @@ class GeneratedParser:
                 if expr_val:
                     self.emit(f"{{var_name}} = {{expr_val}}")
         
-        # 输出语句：通过结构识别（关键字 'LPAREN' Expr 'RPAREN' ...）
-        # 模式：第一个是关键字（终结符），第二个是'LPAREN'，第三个是表达式（非终结符）
-        elif len(production) >= 4 and production[0].startswith("'") and production[1] == "'LPAREN'" and not production[2].startswith("'"):
-            # 通过结构识别：关键字后跟括号表达式
-            # 排除已知的操作符和标识符模式
+        # 输出语句：keyword_token punctuation_token Expr punctuation_token ...（消除硬编码）
+        elif (len(production) >= 4 and 
+              production[0].startswith("'") and production[1].startswith("'") and 
+              not production[2].startswith("'")):
+            # 消除硬编码：通过词法规则动态识别关键字和标点
             first_token_type = production[0][1:-1]
-            # 如果第一个token不是操作符、关系符、赋值符、标识符或数字，则可能是关键字
-            if first_token_type not in ['PLUS', 'MINUS', 'MUL', 'DIV', 'LT', 'LE', 'GT', 'GE', 'EQ', 'NE', 'ASSIGN', 'ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'COMMA']:
+            second_token_type = production[1][1:-1]
+            if (first_token_type in self.keyword_tokens and 
+                second_token_type in self.punctuation_tokens):
                 expr_val = children[2].synthesized_value
                 if expr_val:
                     self.emit(f"param {{expr_val}}")
                     self.emit(f"call write, 1")
         
-        # 输入语句：'READ' 'ID' 'SEMI'
-        elif len(production) >= 2 and production[0] == "'READ'" and production[1] == "'ID'":
+        # 输入语句：keyword_token identifier_token ...（消除硬编码）
+        elif (len(production) >= 2 and 
+              production[0].startswith("'") and production[0][1:-1] in self.keyword_tokens and
+              production[1].startswith("'") and production[1][1:-1] in self.identifier_tokens):
             var_name = children[1].synthesized_value
             if var_name:
                 temp = self.new_temp()
                 self.emit(f"{{temp}} = call read, 0")
                 self.emit(f"{{var_name}} = {{temp}}")
         
-        # 变量声明列表：'ID' ... （通过产生式结构识别）
-        elif len(production) >= 2 and production[0] == "'ID'" and not production[1].startswith("'"):
+        # 变量声明列表：identifier_token ...（消除硬编码）
+        elif (len(production) >= 2 and 
+              production[0].startswith("'") and production[0][1:-1] in self.identifier_tokens and
+              not production[1].startswith("'")):
             # 收集所有声明的变量并添加到符号表
-            # 模式：'ID' Tail，其中Tail可能是 'COMMA' 'ID' Tail | ε
+            # 模式：identifier_token Tail，其中Tail可能是 punctuation_token identifier_token Tail | ε
             def collect_ids_from_tail(tail_node):
-                """递归收集尾部的所有变量名（通过结构识别：COMMA ID ...）"""
+                """递归收集尾部的所有变量名（消除硬编码）"""
                 var_names = []
                 if not tail_node or not tail_node.children:
                     return var_names
                 
-                # 检查是否是 'COMMA' 'ID' ... 模式
+                # 检查是否是 punctuation_token identifier_token ... 模式
                 if len(tail_node.children) >= 2:
                     comma_node = tail_node.children[0]
                     id_node = tail_node.children[1]
-                    # 通过token类型判断，而不是节点名称
-                    if comma_node.token and comma_node.token.type == 'COMMA':
-                        if id_node.token and id_node.token.type == 'ID':
+                    # 消除硬编码：通过词法规则动态识别
+                    if comma_node.token and comma_node.token.type in self.punctuation_tokens:
+                        if id_node.token and id_node.token.type in self.identifier_tokens:
                             var_name = id_node.synthesized_value
                             if var_name:
                                 var_names.append(var_name)
@@ -1458,8 +1675,8 @@ class GeneratedParser:
                 
                 return var_names
             
-            # 处理第一个ID（通过token类型判断）
-            if children[0].token and children[0].token.type == 'ID':
+            # 处理第一个identifier（消除硬编码）
+            if children[0].token and children[0].token.type in self.identifier_tokens:
                 var_name = children[0].synthesized_value
                 if var_name:
                     self.symbol_table[var_name] = {{'type': 'var'}}
@@ -1484,17 +1701,17 @@ class GeneratedParser:
                     self.emit(f"{{temp}} = {{e1}} {{op}} {{e2}}")
                     node.synthesized_value = temp
         
-        # 关系运算符（单个token）：通过结构识别（单个终结符）
-        # 模式：单个终结符，且不是常见的非操作符token
+        # 关系运算符（单个token）：通过结构识别（单个终结符，消除硬编码）
         elif len(production) == 1 and production[0].startswith("'"):
             op_token_type = production[0][1:-1]
-            # 排除已知的非操作符token类型
-            # 如果是操作符（不是标识符、数字、括号、分号、赋值、逗号等），传递值
-            if op_token_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL']:
+            # 消除硬编码：通过词法规则动态识别操作符
+            if op_token_type in self.operator_tokens:
                 node.synthesized_value = children[0].synthesized_value
         
-        # while循环：'WHILE' 'LPAREN' Condition 'RPAREN' Stmt
-        elif len(production) >= 5 and production[0] == "'WHILE'" and production[1] == "'LPAREN'":
+        # while循环：keyword_token punctuation_token Condition punctuation_token Stmt（消除硬编码）
+        elif (len(production) >= 5 and 
+              production[0].startswith("'") and production[0][1:-1] in self.keyword_tokens and
+              production[1].startswith("'") and production[1][1:-1] in self.punctuation_tokens):
             loop_label = self.new_label()
             exit_label = self.new_label()
             self.emit(f"{{loop_label}}:")
@@ -1506,8 +1723,10 @@ class GeneratedParser:
             self.emit(f"goto {{loop_label}}")
             self.emit(f"{{exit_label}}:")
         
-        # if语句：'IF' 'LPAREN' Condition 'RPAREN' Stmt
-        elif len(production) >= 5 and production[0] == "'IF'" and production[1] == "'LPAREN'":
+        # if语句：keyword_token punctuation_token Condition punctuation_token Stmt（消除硬编码）
+        elif (len(production) >= 5 and len(production) < 6 and
+              production[0].startswith("'") and production[0][1:-1] in self.keyword_tokens and
+              production[1].startswith("'") and production[1][1:-1] in self.punctuation_tokens):
             bool_val = children[2].synthesized_value
             exit_label = self.new_label()
             if bool_val:

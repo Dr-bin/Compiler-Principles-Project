@@ -4,7 +4,7 @@
 使用语法制导翻译(Syntax-Directed Translation)技术。
 """
 
-from typing import  Dict, Optional, Any
+from typing import Dict, Optional, Any, List, Tuple
 from src.compiler_generator.parser_generator import ASTNode
 
 class CodeGenerator:
@@ -310,18 +310,19 @@ class ErrorFormatter:
 '''
 
 
-def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: str, metadata: Dict = None) -> str:
-    """生成完整的编译器代码
+def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: str, lexer_rules: List[Tuple[str, str]] = None, metadata: Dict = None) -> str:
+    """生成完整的编译器代码（消除硬编码版本）
     
     参数:
         lexer_code: 词法分析器代码
         grammar_rules: 语法规则字典
         start_symbol: 开始符号
+        lexer_rules: 词法规则列表（用于消除硬编码）
         metadata: 语言特性元数据（可选）
     """
 
     # --- 第一步：强制使用 ParserGenerator 优化文法并生成 Parser 代码 ---
-    pg = ParserGenerator()
+    pg = ParserGenerator(lexer_rules=lexer_rules)  # 传入词法规则
     pg.set_start_symbol(start_symbol)
     for nt, prods in grammar_rules.items():
         for p in prods:
@@ -334,7 +335,7 @@ def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: s
     optimized_grammar = pg.grammar
     first_sets = pg.first_sets
     follow_sets = pg.follow_sets
-    parser_code = generate_parser_code(optimized_grammar, start_symbol, first_sets, follow_sets, metadata=metadata)
+    parser_code = generate_parser_code(optimized_grammar, start_symbol, first_sets, follow_sets, lexer_rules=lexer_rules, metadata=metadata)
 
     # --- 第二步：读取 ErrorFormatter 代码 ---
     error_formatter_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
