@@ -14,10 +14,10 @@
 
 本项目实现了真正的**语法制导翻译（SDT）**，满足编译原理课程的严格要求：
 
-✅ **一遍扫描编译**：在语法分析过程中同时生成中间代码，无需单独的代码生成阶段  
-✅ **语义动作嵌入**：每识别一个产生式，立即执行相应的翻译动作  
-✅ **综合属性计算**：使用综合属性（Synthesized Attributes）在AST节点中传递语义信息  
-✅ **三地址码生成**：实时生成规范的三地址中间代码（临时变量、标签等）
+**一遍扫描编译**：在语法分析过程中同时生成中间代码，无需单独的代码生成阶段  
+**语义动作嵌入**：每识别一个产生式，立即执行相应的翻译动作  
+**综合属性计算**：使用综合属性（Synthesized Attributes）在AST节点中传递语义信息  
+**三地址码生成**：实时生成规范的三地址中间代码（临时变量、标签等）
 
 ### SDT实现示例
 
@@ -47,11 +47,11 @@ call print, 1
 
 ## 项目特点
 
-✅ **完整的编译器流程**：从源代码到中间代码的完整实现
-✅ **自动化生成**：从规则文件自动生成编译器
-✅ **易于扩展**：模块化设计，便于添加新语言
-✅ **教学友好**：所有代码包含详尽的中文注释和文档
-✅ **完整的测试**：包含单元测试和集成测试
+**完整的编译器流程**：从源代码到中间代码的完整实现
+**自动化生成**：从规则文件自动生成编译器
+**易于扩展**：模块化设计，便于添加新语言
+**教学友好**：所有代码包含详尽的中文注释和文档
+**完整的测试**：包含单元测试和集成测试
 
 ## 项目结构
 
@@ -91,6 +91,7 @@ compiler_project/
 │   ├── 修改总结.md               # SDT改造总结
 │   └── 项目评估报告.md           # 完整的项目评估
 ├── main.py                       # 主程序入口
+├── config.py                     # 配置文件（默认路径参数）
 ├── requirements.txt              # 项目依赖
 └── README.md                     # 本文件
 ```
@@ -115,14 +116,104 @@ compiler_project/
 pip install -r requirements.txt
 ```
 
-### 运行示例
+### 简化命令（推荐）
+
+所有命令都支持最短别名，只需输入最少的字母即可：
+
+| 完整命令 | 简化命令 | 说明 |
+|---------|---------|------|
+| `build` | `b` | 生成编译器 |
+| `compile` | `c` | 编译单个文件 |
+| `batch` | `ba` | 批量编译文件夹 |
+| `test-compiler` | `t` | 测试编译器 |
+
+### 配置文件
+
+所有默认路径都在 `config.py` 中配置，可以随时修改：
+
+```python
+# config.py
+DEFAULT_COMPILER = "generated/compiler.py"
+DEFAULT_SOURCE_DIR = "examples/error_test"
+DEFAULT_OUTPUT_DIR = "test_outputs"
+DEFAULT_LEXER_RULES = "examples/pl0_subset/lexer_rules.txt"
+DEFAULT_GRAMMAR_RULES = "examples/pl0_subset/grammar_rules.txt"
+DEFAULT_SOURCE_FILE = "examples/pl0_subset/programs/basic_pl0.src"
+```
+
+### 使用示例
+
+#### 1. 生成编译器（最短命令）
 
 ```bash
-# 编译一个简单的源代码
-python main.py compile examples/simple_expr/lexer_rules.txt examples/simple_expr/grammar_rules.txt examples/sample.src -o output.tac
+# 使用默认规则文件（从 config.py 读取）
+python main.py b
 
-# 运行测试
+# 指定规则文件
+python main.py b examples/pl0_subset/lexer_rules.txt examples/pl0_subset/grammar_rules.txt
+
+# 指定输出文件
+python main.py b -o generated/my_compiler.py
+```
+
+#### 2. 编译单个文件（最短命令）
+
+```bash
+# 使用默认配置（从 config.py 读取）
+python main.py c
+
+# 指定文件
+python main.py c examples/simple_expr/programs/basic_sample.src -o output.tac
+
+# 完整命令
+python main.py compile \
+  examples/simple_expr/lexer_rules.txt \
+  examples/simple_expr/grammar_rules.txt \
+  examples/simple_expr/programs/basic_sample.src \
+  -o output.tac
+```
+
+#### 3. 批量编译（最短命令）
+
+```bash
+# 使用默认配置（从 config.py 读取）
+python main.py ba
+
+# 指定源文件夹和输出文件夹
+python main.py ba examples/error_test test_outputs/errors
+
+# 指定所有参数
+python main.py ba examples/error_test test_outputs/errors -c generated/compiler.py
+```
+
+**批量编译功能特点**：
+- **递归搜索**：自动搜索子文件夹中的所有 `.src` 文件
+- **保持目录结构**：输出文件保持与源文件相同的目录结构
+- **错误处理**：编译失败时保存详细的错误信息（英文格式）
+- **统计信息**：显示编译统计（成功/失败数量）
+
+**输出说明**：
+- **编译成功**：保存为 `<output_dir>/<filename>.tac`
+- **编译失败**：保存错误信息到 `<output_dir>/<filename>_error.txt`
+
+#### 4. 测试编译器
+
+```bash
+# 使用默认配置（从 config.py 读取）
+python main.py t
+
+# 指定测试目录
+python main.py t -p examples/simple_expr/programs -o test_outputs
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
 python -m pytest tests/ -v
+
+# 运行特定测试文件
+python -m pytest tests/test_lexer.py -v
 ```
 
 ## 核心模块说明
@@ -311,10 +402,10 @@ python -m pytest tests/ --cov=src --cov-report=html
 | 词法分析 | 同学A | `src/compiler_generator/lexer_generator.py` |
 | 语法分析 | 同学B | `src/compiler_generator/parser_generator.py` |
 | 代码生成 | 同学C | `src/compiler_generator/code_generator.py` |
-| 前端接口 | 全体 | `src/frontend/` |
-| 工具模块 | 全体 | `src/utils/` |
-| 测试 | 全体 | `tests/` |
-| 文档 | 全体 | `README.md` |
+| 前端接口 | 同学D | `src/frontend/` |
+| 工具模块 | 同学D | `src/utils/` |
+| 测试 | 同学D | `tests/` |
+| 文档 | 同学D | `README.md` |
 
 ## 语法制导翻译（SDT）技术细节
 
@@ -374,8 +465,8 @@ python test_sdt_debug.py  # 查看解析过程中的代码生成
 
 ### 支持更复杂的文法
 
-1. 实现FIRST/FOLLOW集合分析 ✅ **已实现**
-2. 改进冲突解决策略 ✅ **已实现**（消除左递归、左公因子）
+1. 实现FIRST/FOLLOW集合分析 **已实现**
+2. 改进冲突解决策略 **已实现**（消除左递归、左公因子）
 3. 支持更多的文法特性（如EBNF）
 
 ### 增强代码生成
@@ -388,7 +479,7 @@ python test_sdt_debug.py  # 查看解析过程中的代码生成
 
 1. 词法分析优化（DFA最小化）
 2. 语法分析优化（LR解析）
-3. **代码生成优化** ✅ **已采用SDT实现一遍扫描**
+3. **代码生成优化** **已采用SDT实现一遍扫描**
 
 ## 常见问题
 
@@ -420,6 +511,3 @@ A:
 本项目用于教学和学习编译原理。
 
 ---
-
-**创建日期**: 2025年11月28日
-**最后更新**: 2025年11月28日

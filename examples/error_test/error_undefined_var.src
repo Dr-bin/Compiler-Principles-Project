@@ -1,5 +1,0 @@
-// 测试未定义变量的智能提示
-count = 10;
-index = 20;
-value = 30;
-print(cont + indx + valeu);

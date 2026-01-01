@@ -192,6 +192,122 @@ class CodeGenerator:
 from typing import List, Dict, Any
 from datetime import datetime
 from src.compiler_generator.parser_generator import ParserGenerator, generate_parser_code
+import os
+
+
+def _get_inline_error_formatter() -> str:
+    """获取内联的 ErrorFormatter 代码（如果文件读取失败时使用）"""
+    return '''from typing import List, Optional, Tuple
+import os
+
+class ErrorFormatter:
+    """错误格式化器类"""
+    
+    def __init__(self, source_code: str = None, source_file: str = None):
+        if source_file and os.path.exists(source_file):
+            with open(source_file, 'r', encoding='utf-8') as f:
+                self.source_code = f.read()
+            self.source_file = source_file
+        else:
+            self.source_code = source_code or ""
+            self.source_file = source_file
+        self.source_lines = self.source_code.split('\\n') if self.source_code else []
+    
+    def format_syntax_error(self, error_message: str, line: int, column: int, 
+                           expected_tokens: List[str] = None) -> str:
+        result = []
+        result.append("=" * 70)
+        result.append("[ERROR] Syntax Error")
+        result.append("=" * 70)
+        result.append("")
+        location = f"File: {{self.source_file}}" if self.source_file else "Source code"
+        result.append(f"[Location] {{location}}, Line {{line}}, Column {{column}}")
+        result.append("")
+        context_lines = 2
+        start_line = max(1, line - context_lines)
+        end_line = min(len(self.source_lines), line + context_lines)
+        result.append("[Source Code Snippet]:")
+        result.append("-" * 70)
+        for i in range(start_line, end_line + 1):
+            line_num = str(i).rjust(4)
+            line_content = self.source_lines[i - 1] if i <= len(self.source_lines) else ""
+            if i == line:
+                result.append(f">>> {{line_num}} | {{line_content}}")
+                arrow = " " * (len(line_num) + 4) + " " * (column - 1) + "^" * max(1, len(line_content[column-1:column]) or 1)
+                result.append(f"    {{arrow}}")
+            else:
+                result.append(f"    {{line_num}} | {{line_content}}")
+        result.append("-" * 70)
+        result.append("")
+        result.append("[Error Details]:")
+        result.append(f"   {{error_message}}")
+        result.append("")
+        if expected_tokens:
+            result.append("[Expected Token Types]:")
+            if len(expected_tokens) <= 5:
+                result.append(f"   {{', '.join(expected_tokens)}}")
+            else:
+                result.append(f"   {{', '.join(expected_tokens[:5])}} ... (total {{len(expected_tokens)}} types)")
+            result.append("")
+        result.append("[Suggestions]:")
+        if expected_tokens:
+            token_suggestions = {{
+                'SEMI': 'Missing semicolon (;)',
+                'RPAREN': 'Missing right parenthesis ())',
+                'LPAREN': 'Missing left parenthesis (()',
+                'NUM': 'A number is expected here',
+                'ID': 'An identifier (variable name) is expected here',
+            }}
+            for token in expected_tokens[:3]:
+                if token in token_suggestions:
+                    result.append(f"   - {{token_suggestions[token]}}")
+        else:
+            result.append("   - Please check if the grammar rules are correct")
+        result.append("")
+        result.append("=" * 70)
+        return "\\n".join(result)
+    
+    def format_lexical_error(self, error_message: str, line: int, column: int) -> str:
+        result = []
+        result.append("=" * 70)
+        result.append("[ERROR] Lexical Error")
+        result.append("=" * 70)
+        result.append("")
+        location = f"File: {{self.source_file}}" if self.source_file else "Source code"
+        result.append(f"[Location] {{location}}, Line {{line}}, Column {{column}}")
+        result.append("")
+        context_lines = 2
+        start_line = max(1, line - context_lines)
+        end_line = min(len(self.source_lines), line + context_lines)
+        result.append("[Source Code Snippet]:")
+        result.append("-" * 70)
+        for i in range(start_line, end_line + 1):
+            line_num = str(i).rjust(4)
+            line_content = self.source_lines[i - 1] if i <= len(self.source_lines) else ""
+            if i == line:
+                result.append(f">>> {{line_num}} | {{line_content}}")
+                arrow = " " * (len(line_num) + 4) + " " * (column - 1) + "^" * max(1, len(line_content[column-1:column]) or 1)
+                result.append(f"    {{arrow}}")
+            else:
+                result.append(f"    {{line_num}} | {{line_content}}")
+        result.append("-" * 70)
+        result.append("")
+        result.append(f"[Error Details] {{error_message}}")
+        result.append("")
+        result.append("=" * 70)
+        return "\\n".join(result)
+    
+    def format_general_error(self, error_message: str, error_type: str = "Error") -> str:
+        result = []
+        result.append("=" * 70)
+        result.append(f"[ERROR] {{error_type}}")
+        result.append("=" * 70)
+        result.append("")
+        result.append(f"[错误详情] {{error_message}}")
+        result.append("")
+        result.append("=" * 70)
+        return "\\n".join(result)
+'''
 
 
 def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: str) -> str:
@@ -211,10 +327,35 @@ def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: s
     optimized_grammar = pg.grammar
     parser_code = generate_parser_code(optimized_grammar, start_symbol)
 
-    # --- 第二步：生成编译器字符串 ---
+    # --- 第二步：读取 ErrorFormatter 代码 ---
+    error_formatter_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                                        'src', 'utils', 'error_formatter.py')
+    try:
+        with open(error_formatter_path, 'r', encoding='utf-8') as f:
+            error_formatter_code = f.read()
+        # 移除文件开头的文档字符串，只保留类定义
+        lines = error_formatter_code.split('\n')
+        class_start = -1
+        for i, line in enumerate(lines):
+            if line.startswith('class ErrorFormatter'):
+                class_start = i
+                break
+        
+        if class_start >= 0:
+            # 保留必要的导入和类定义
+            error_formatter_code = '\n'.join([
+                'from typing import List, Optional, Tuple',
+                'import os',
+                ''] + lines[class_start:])
+    except Exception:
+        # 如果读取失败，使用内联的简化版本
+        error_formatter_code = _get_inline_error_formatter()
+
+    # --- 第三步：生成编译器字符串 ---
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     return f'''#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 # =============================================================================
 # 自动生成的编译器 (LL(1) 优化版)
 # 生成时间: {current_time}
@@ -222,8 +363,32 @@ def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: s
 
 import sys
 import argparse
+import re
+import io
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+# --- 编码处理（Windows 兼容） ---
+# 确保在 Windows 上也能正确显示 UTF-8 中文
+if sys.platform == 'win32':
+    try:
+        # Python 3.7+ 支持 reconfigure
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        else:
+            # Python 3.6 及以下版本，使用 TextIOWrapper
+            if sys.stdout.encoding != 'utf-8':
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+            if sys.stderr.encoding != 'utf-8':
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+    except Exception:
+        # 如果所有方法都失败，至少确保不会崩溃
+        pass
+
+# --- 错误格式化器部分 ---
+{error_formatter_code}
 
 # --- 词法分析器部分 ---
 {lexer_code}
@@ -494,6 +659,7 @@ class GeneratedCompiler:
         
         [SDT] 使用语法制导翻译进行编译
         """
+        source_code = ""
         try:
             with open(input_file, 'r', encoding='utf-8') as f:
                 source_code = f.read()
@@ -505,12 +671,38 @@ class GeneratedCompiler:
                     if line.strip():  # 只写入非空行
                         f.write(line + '\\n')
             
-            print(f"[成功] 编译完成（语法制导翻译）-> {{output_file}}")
-            print(f"       生成 {{len([l for l in code_lines if l.strip()])}} 条中间代码指令")
+            print(f"[Success] Compilation completed (Syntax-Directed Translation) -> {{output_file}}")
+            print(f"         Generated {{len([l for l in code_lines if l.strip()])}} intermediate code instructions")
+        except SyntaxError as e:
+            # 使用 ErrorFormatter 格式化语法/词法错误
+            formatter = ErrorFormatter(source_code=source_code, source_file=input_file)
+            error_msg = str(e)
+            
+            # Extract line and column numbers from error message
+            line_match = re.search(r'line (\\d+)', error_msg, re.IGNORECASE)
+            col_match = re.search(r'column (\\d+)', error_msg, re.IGNORECASE)
+            line = int(line_match.group(1)) if line_match else 1
+            col = int(col_match.group(1)) if col_match else 1
+            
+            # Determine if it's a lexical error or syntax error
+            if 'lexical error' in error_msg.lower() or 'unrecognized' in error_msg.lower():
+                formatted_error = formatter.format_lexical_error(error_msg, line, col)
+            else:
+                # Try to extract expected tokens
+                expected_tokens = None
+                expected_match = re.search(r'expected[：:]?\\s*([^\\n]+)', error_msg, re.IGNORECASE)
+                if expected_match:
+                    expected_tokens = [t.strip() for t in expected_match.group(1).split(',')]
+                formatted_error = formatter.format_syntax_error(error_msg, line, col, expected_tokens)
+            
+            print("\\n" + formatted_error)
+            sys.exit(1)
         except Exception as e:
-            print(f"[错误] {{str(e)}}")
-            import traceback
-            traceback.print_exc()
+            # 其他错误也使用 ErrorFormatter
+            formatter = ErrorFormatter(source_code=source_code, source_file=input_file)
+            formatted_error = formatter.format_general_error(str(e), "编译错误")
+            print("\\n" + formatted_error)
+            sys.exit(1)
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="自动生成的编译器（SDT版）")

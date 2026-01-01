@@ -495,11 +495,11 @@ class ParserGenerator:
         defined_vars = set(self.symbol_table.keys())
         suggestion = suggest_variable_fix(var_name, defined_vars)
         
-        error_msg = f"语义错误: 第 {line} 行, 第 {column} 列 - 变量 '{var_name}' 未定义"
+        error_msg = f"Semantic error at line {line}, column {column} - variable '{var_name}' is not defined"
         if suggestion:
-            error_msg += f"\n  [智能建议] 你是不是想用 '{suggestion}'?"
+            error_msg += f"\n  [Suggestion] Did you mean '{suggestion}'?"
         elif defined_vars:
-            error_msg += f"\n  [提示] 已定义的变量: {', '.join(sorted(defined_vars))}"
+            error_msg += f"\n  [Hint] Defined variables: {', '.join(sorted(defined_vars))}"
         
         self.semantic_errors.append(error_msg)
         return False
@@ -1021,9 +1021,9 @@ class GeneratedParser:
         if token.type == token_type:
             return self.advance()
         raise SyntaxError(
-            f"语法错误: 第{{token.line}}行, 第{{token.column}}列\\n"
-            f"  期望: {{token_type}}\\n"
-            f"  实际: {{token.type}} (值: '{{token.value}}')"
+            f"Syntax error at line {{token.line}}, column {{token.column}}\\n"
+            f"  Expected: {{token_type}}\\n"
+            f"  Got: {{token.type}} (value: '{{token.value}}')"
         )
     
     def parse_symbol(self, symbol: str):
@@ -1065,12 +1065,12 @@ class GeneratedParser:
                 if prod and prod[0].startswith("'") and prod[0].endswith("'"):
                     expected_tokens.append(prod[0][1:-1])
             
-            expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "未知"
+            expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "unknown"
             raise SyntaxError(
-                f"语法错误: 第{{current.line}}行, 第{{current.column}}列\\n"
-                f"  无法解析非终结符 '{{symbol}}'\\n"
-                f"  当前token: {{current.type}} (值: '{{current.value}}')\\n"
-                f"  期望的token类型: {{expected_str}}"
+                f"Syntax error at line {{current.line}}, column {{current.column}}\\n"
+                f"  Cannot parse non-terminal '{{symbol}}'\\n"
+                f"  Current token: {{current.type}} (value: '{{current.value}}')\\n"
+                f"  Expected token types: {{expected_str}}"
             )
         
         # 直接匹配token类型
@@ -1211,9 +1211,9 @@ class GeneratedParser:
         current = self.current_token()
         if current.type != 'EOF':
             raise SyntaxError(
-                f"语法错误: 第{{current.line}}行, 第{{current.column}}列\\n"
-                f"  解析未完成，仍有未处理的token\\n"
-                f"  剩余token: {{current.type}} (值: '{{current.value}}')"
+                f"Syntax error at line {{current.line}}, column {{current.column}}\\n"
+                f"  Parsing incomplete, unprocessed token remaining\\n"
+                f"  Remaining token: {{current.type}} (value: '{{current.value}}')"
             )
         return ast
 '''

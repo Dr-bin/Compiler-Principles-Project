@@ -17,6 +17,19 @@ from src.utils.error_handler import ErrorHandler
 from src.utils.error_formatter import ErrorFormatter
 from src.utils.flow_visualizer import visualize_tac
 
+# 导入配置文件
+try:
+    import config
+except ImportError:
+    # 如果 config.py 不存在，使用默认值
+    class config:
+        DEFAULT_COMPILER = "generated/compiler_simple.py"
+        DEFAULT_SOURCE_DIR = "examples/simple_expr/programs"
+        DEFAULT_OUTPUT_DIR = "test_outputs"
+        DEFAULT_LEXER_RULES = "examples/simple_expr/lexer_rules.txt"
+        DEFAULT_GRAMMAR_RULES = "examples/simple_expr/grammar_rules.txt"
+        DEFAULT_SOURCE_FILE = "examples/simple_expr/programs/basic_sample.src"
+
 
 class CompilerCLI:
     """编译器CLI类
@@ -52,12 +65,14 @@ class CompilerCLI:
         parsed_args = parser.parse_args(args)
 
         try:
-            if parsed_args.command == 'build':
+            if parsed_args.command in ('build', 'b'):
                 return self._cmd_build(parsed_args)
-            elif parsed_args.command == 'compile':
+            elif parsed_args.command in ('compile', 'c'):
                 return self._cmd_compile(parsed_args)
-            elif parsed_args.command == 'test-compiler':
+            elif parsed_args.command in ('test-compiler', 't'):
                 return self._cmd_test_compiler(parsed_args)
+            elif parsed_args.command in ('batch', 'ba'):
+                return self._cmd_batch(parsed_args)
             else:
                 parser.print_help()
                 return 1
@@ -78,54 +93,66 @@ class CompilerCLI:
 
         subparsers = parser.add_subparsers(dest='command', help='子命令')
 
-        # build 子命令：从规则文件生成编译器
-        build_parser = subparsers.add_parser('build', help='从规则文件生成编译器')
+        # build 子命令：从规则文件生成编译器（可用 'b' 作为别名）
+        build_parser = subparsers.add_parser('build', aliases=['b'], help='从规则文件生成编译器')
         build_parser.add_argument('lexer_rules', nargs='?', 
-                                 default='examples/simple_expr/lexer_rules.txt',
-                                 help='词法规则文件路径（默认：examples/simple_expr/lexer_rules.txt）')
+                                 default=config.DEFAULT_LEXER_RULES,
+                                 help=f'词法规则文件路径（默认：{config.DEFAULT_LEXER_RULES}）')
         build_parser.add_argument('grammar_rules', nargs='?',
-                                 default='examples/simple_expr/grammar_rules.txt',
-                                 help='语法规则文件路径（默认：examples/simple_expr/grammar_rules.txt）')
+                                 default=config.DEFAULT_GRAMMAR_RULES,
+                                 help=f'语法规则文件路径（默认：{config.DEFAULT_GRAMMAR_RULES}）')
         build_parser.add_argument('-o', '--output', default='generated/compiler.py',
                                  help='输出文件路径（默认：generated/compiler.py）')
 
-        # compile 子命令：使用生成的编译器编译源代码
-        compile_parser = subparsers.add_parser('compile', help='编译源代码')
+        # compile 子命令：使用生成的编译器编译源代码（可用 'c' 作为别名）
+        compile_parser = subparsers.add_parser('compile', aliases=['c'], help='编译源代码')
         compile_parser.add_argument('lexer_rules', nargs='?',
-                                   default='examples/simple_expr/lexer_rules.txt',
-                                   help='词法规则文件路径（默认：examples/simple_expr/lexer_rules.txt）')
+                                   default=config.DEFAULT_LEXER_RULES,
+                                   help=f'词法规则文件路径（默认：{config.DEFAULT_LEXER_RULES}）')
         compile_parser.add_argument('grammar_rules', nargs='?',
-                                   default='examples/simple_expr/grammar_rules.txt',
-                                   help='语法规则文件路径（默认：examples/simple_expr/grammar_rules.txt）')
+                                   default=config.DEFAULT_GRAMMAR_RULES,
+                                   help=f'语法规则文件路径（默认：{config.DEFAULT_GRAMMAR_RULES}）')
         compile_parser.add_argument('source', nargs='?',
-                                   default='examples/sample.src',
-                                   help='要编译的源代码文件（默认：examples/sample.src）')
+                                   default=config.DEFAULT_SOURCE_FILE,
+                                   help=f'要编译的源代码文件（默认：{config.DEFAULT_SOURCE_FILE}）')
         compile_parser.add_argument('-o', '--output', help='输出文件路径（可选）')
         compile_parser.add_argument('--cfg', action='store_true',
                                    help='生成控制流图（每条指令一个节点）')
         compile_parser.add_argument('--cfg-block', action='store_true',
                                    help='生成控制流图（基本块模式）')
 
-        # test-compiler 子命令：构建并测试生成的编译器
+        # test-compiler 子命令：构建并测试生成的编译器（可用 't' 作为别名）
         test_parser = subparsers.add_parser(
-            'test-compiler',
+            'test-compiler', aliases=['t'],
             help='构建并用内置示例程序测试生成的编译器'
         )
         test_parser.add_argument('lexer_rules', nargs='?',
-                                 default='examples/simple_expr/lexer_rules.txt',
-                                 help='词法规则文件路径（默认：examples/simple_expr/lexer_rules.txt）')
+                                 default=config.DEFAULT_LEXER_RULES,
+                                 help=f'词法规则文件路径（默认：{config.DEFAULT_LEXER_RULES}）')
         test_parser.add_argument('grammar_rules', nargs='?',
-                                 default='examples/simple_expr/grammar_rules.txt',
-                                 help='语法规则文件路径（默认：examples/simple_expr/grammar_rules.txt）')
+                                 default=config.DEFAULT_GRAMMAR_RULES,
+                                 help=f'语法规则文件路径（默认：{config.DEFAULT_GRAMMAR_RULES}）')
         test_parser.add_argument('-c', '--compiler-output',
                                  default='generated/compiler.py',
                                  help='生成的编译器路径（默认：generated/compiler.py）')
         test_parser.add_argument('-p', '--program-dir',
-                                 default='examples/simple_expr/programs',
-                                 help='测试程序所在目录（默认：examples/simple_expr/programs）')
+                                 default=config.DEFAULT_SOURCE_DIR,
+                                 help=f'测试程序所在目录（默认：{config.DEFAULT_SOURCE_DIR}）')
         test_parser.add_argument('-o', '--output-dir',
                                  default='generated/test_outputs',
                                  help='测试输出目录（默认：generated/test_outputs）')
+
+        # batch 子命令：批量编译文件夹中的所有 .src 文件（可用 'batch' 或 'ba' 作为别名）
+        batch_parser = subparsers.add_parser('batch', aliases=['ba'], help='批量编译文件夹中的所有 .src 文件')
+        batch_parser.add_argument('source_dir', nargs='?',
+                                 default=config.DEFAULT_SOURCE_DIR,
+                                 help=f'源代码文件夹路径（默认：{config.DEFAULT_SOURCE_DIR}）')
+        batch_parser.add_argument('output_dir', nargs='?',
+                                 default=config.DEFAULT_OUTPUT_DIR,
+                                 help=f'输出文件夹路径（默认：{config.DEFAULT_OUTPUT_DIR}）')
+        batch_parser.add_argument('-c', '--compiler',
+                                 default=config.DEFAULT_COMPILER,
+                                 help=f'编译器路径（默认：{config.DEFAULT_COMPILER}）')
 
         return parser
 
@@ -455,6 +482,126 @@ class CompilerCLI:
         except Exception as e:
             self.logger.error(f"test-compiler 执行失败: {e}")
             return 1
+    
+    def _cmd_batch(self, args) -> int:
+        """处理 batch 命令：批量编译文件夹中的所有 .src 文件
+        
+        参数:
+            args: 解析后的命令行参数
+            
+        返回:
+            退出码
+        """
+        source_dir = args.source_dir
+        output_dir = args.output_dir
+        compiler_path = args.compiler
+        
+        # 检查编译器是否存在
+        if not os.path.exists(compiler_path):
+            self.logger.error(f"Compiler not found: {compiler_path}")
+            self.logger.info("Please run 'python main.py build' first to generate the compiler")
+            return 1
+        
+        # 检查源文件夹是否存在
+        if not os.path.isdir(source_dir):
+            self.logger.error(f"Source directory not found: {source_dir}")
+            return 1
+        
+        # 创建输出文件夹
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 查找所有 .src 文件
+        src_files = []
+        for root, dirs, files in os.walk(source_dir):
+            for file in files:
+                if file.endswith('.src'):
+                    src_files.append(os.path.join(root, file))
+        
+        if not src_files:
+            self.logger.warning(f"No .src files found in: {source_dir}")
+            return 0
+        
+        self.logger.info("=" * 70)
+        self.logger.info("Batch Compilation")
+        self.logger.info("=" * 70)
+        self.logger.info(f"Source Directory: {source_dir}")
+        self.logger.info(f"Output Directory: {output_dir}")
+        self.logger.info(f"Compiler: {compiler_path}")
+        self.logger.info(f"Found {len(src_files)} .src file(s)")
+        self.logger.info("=" * 70)
+        self.logger.info("")
+        
+        success_count = 0
+        error_count = 0
+        
+        for src_file in sorted(src_files):
+            # 获取相对路径用于输出文件名
+            rel_path = os.path.relpath(src_file, source_dir)
+            base_name = os.path.splitext(rel_path)[0]
+            
+            # 生成输出文件路径（.tac 文件）
+            output_file = os.path.join(output_dir, base_name + '.tac')
+            
+            # 创建输出文件的目录结构
+            os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else output_dir, exist_ok=True)
+            
+            self.logger.info(f"[Compiling] {rel_path}...")
+            
+            try:
+                # 运行编译器
+                result = subprocess.run(
+                    [sys.executable, compiler_path, src_file, '-o', output_file],
+                    capture_output=True,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    timeout=30
+                )
+                
+                if result.returncode == 0:
+                    # 编译成功
+                    self.logger.success(f"  [SUCCESS] -> {base_name}.tac")
+                    success_count += 1
+                else:
+                    # 编译失败（语法/词法错误）
+                    self.logger.error(f"  [ERROR] Compilation failed")
+                    error_count += 1
+                    
+                    # 保存错误信息到文件
+                    error_file = os.path.join(output_dir, base_name + '_error.txt')
+                    with open(error_file, 'w', encoding='utf-8') as f:
+                        f.write(f"Source File: {src_file}\n")
+                        f.write(f"Output File: {output_file}\n")
+                        f.write("=" * 70 + "\n\n")
+                        if result.stdout:
+                            f.write("Standard Output:\n")
+                            f.write(result.stdout)
+                            f.write("\n")
+                        if result.stderr:
+                            f.write("Standard Error:\n")
+                            f.write(result.stderr)
+                            f.write("\n")
+                    
+                    self.logger.info(f"  [INFO] Error details saved to: {base_name}_error.txt")
+            
+            except subprocess.TimeoutExpired:
+                self.logger.error(f"  [TIMEOUT] Compilation timeout (>30s)")
+                error_count += 1
+            except Exception as e:
+                self.logger.error(f"  [EXCEPTION] {e}")
+                error_count += 1
+        
+        self.logger.info("")
+        self.logger.info("=" * 70)
+        self.logger.info("Compilation Summary")
+        self.logger.info("=" * 70)
+        self.logger.info(f"Total files:     {len(src_files)}")
+        self.logger.info(f"Success:         {success_count}")
+        self.logger.info(f"Errors:          {error_count}")
+        self.logger.info(f"Output directory: {output_dir}")
+        self.logger.info("=" * 70)
+        
+        return 0 if error_count == 0 else 1
     
     def _parse_error_message(self, error_msg: str) -> dict:
         """解析错误消息，提取行号、列号和期望的token

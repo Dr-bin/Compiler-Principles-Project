@@ -755,7 +755,7 @@ class GeneratedLexer:
                 position += max_len
                 column += max_len
             else:
-                raise SyntaxError(f"词法错误 行{{line}} 列{{column}}: 无法识别 '{{text[position]}}'")
+                raise SyntaxError(f"Lexical error at line {{line}}, column {{column}}: unrecognized character '{{text[position]}}'")
         
         tokens.append(Token('EOF', '', line, column))
         return tokens
