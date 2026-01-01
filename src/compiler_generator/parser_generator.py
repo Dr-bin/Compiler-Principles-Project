@@ -1323,6 +1323,72 @@ class GeneratedParser:
         elif symbol in ['VarDecl', 'DeclListTail', 'IDListTail']:
             # 这些节点本身不生成代码，子节点已经生成了
             pass
+        
+        # BoolExpr -> Expr RelOp Expr (或 Condition -> Expr RelOp Expr)
+        elif symbol in ['BoolExpr', 'Condition'] and len(children) >= 3:
+            e1 = children[0].synthesized_value
+            op = children[1].synthesized_value
+            e2 = children[2].synthesized_value
+            if e1 and op and e2:
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = {{e1}} {{op}} {{e2}}")
+                node.synthesized_value = temp
+        
+        # RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
+        elif symbol == 'RelOp' and len(children) == 1:
+            node.synthesized_value = children[0].synthesized_value
+        
+        # WhileStmt -> 'WHILE' 'LPAREN' BoolExpr/Condition 'RPAREN' Stmt
+        elif symbol == 'WhileStmt' and len(children) >= 5:
+            # 使用回填技术：循环体代码已生成，需要在正确位置插入标签和跳转
+            bool_val = children[2].synthesized_value
+            if bool_val:
+                loop_label = self.new_label()
+                exit_label = self.new_label()
+                
+                # 找到条件表达式代码的位置
+                insert_pos = -1
+                for i, code in enumerate(self.code_buffer):
+                    if bool_val in code and '=' in code and 'not' not in code and 'goto' not in code:
+                        insert_pos = i
+                        break
+                
+                if insert_pos >= 0:
+                    # 在条件表达式之前插入循环标签
+                    self.code_buffer.insert(insert_pos, f"{{loop_label}}:")
+                    # 生成条件跳转
+                    temp = self.new_temp()
+                    self.code_buffer.insert(insert_pos + 2, f"{{temp}} = not {{bool_val}}")
+                    self.code_buffer.insert(insert_pos + 3, f"if {{temp}} goto {{exit_label}}")
+                    # 在末尾添加回跳和出口标签
+                    self.code_buffer.append(f"goto {{loop_label}}")
+                    self.code_buffer.append(f"{{exit_label}}:")
+        
+        # IfStmt -> 'IF' 'LPAREN' BoolExpr/Condition 'RPAREN' Stmt
+        elif symbol == 'IfStmt' and len(children) >= 5:
+            # 使用回填技术
+            bool_val = children[2].synthesized_value
+            if bool_val:
+                exit_label = self.new_label()
+                
+                # 找到条件表达式代码的位置
+                insert_pos = -1
+                for i, code in enumerate(self.code_buffer):
+                    if bool_val in code and '=' in code and 'not' not in code and 'goto' not in code:
+                        insert_pos = i
+                        break
+                
+                if insert_pos >= 0:
+                    temp = self.new_temp()
+                    # 在条件表达式后插入条件跳转
+                    self.code_buffer.insert(insert_pos + 1, f"{{temp}} = not {{bool_val}}")
+                    self.code_buffer.insert(insert_pos + 2, f"if {{temp}} goto {{exit_label}}")
+                    # 在末尾添加出口标签
+                    self.code_buffer.append(f"{{exit_label}}:")
+        
+        # Block -> 'LBRACE' StmtList 'RBRACE'
+        elif symbol == 'Block' and len(children) >= 2:
+            pass  # 子节点已经生成代码
     
     def _handle_tail(self, tail_node, left_val):
         """处理表达式尾部（支持优化后的文法结构）"""

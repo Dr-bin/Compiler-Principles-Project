@@ -414,6 +414,128 @@ class CompilationError(Exception):
     pass
 
 # =============================================================================
+# 控制流图可视化
+# =============================================================================
+
+class FlowVisualizer:
+    """控制流图生成器"""
+
+    def _is_label(self, line: str) -> bool:
+        return bool(re.match(r'^L\\d+:', line))
+
+    def _is_conditional_jump(self, line: str) -> bool:
+        return line.startswith('if ') and 'goto' in line
+
+    def _is_unconditional_jump(self, line: str) -> bool:
+        return line.startswith('goto ')
+
+    def _get_jump_target(self, line: str):
+        match = re.search(r'goto\\s+(L\\d+)', line)
+        return match.group(1) if match else None
+
+    def generate_mermaid(self, tac_code: str) -> str:
+        """每条指令一个节点"""
+        lines_list = [l.strip() for l in tac_code.strip().split('\\n') if l.strip()]
+        if not lines_list:
+            return "graph TD\\n    empty[无代码]"
+        result = ["graph TD"]
+        label_nodes = {{}}
+        jump_edges = []
+        for i, line in enumerate(lines_list):
+            if self._is_label(line):
+                label_nodes[line[:-1]] = f"N{{i}}"
+        for i, line in enumerate(lines_list):
+            nid = f"N{{i}}"
+            content = line.replace('"', "'")
+            if self._is_label(line):
+                result.append(f'    {{nid}}(["{{content}}"])')
+                if i + 1 < len(lines_list):
+                    result.append(f'    {{nid}} --> N{{i+1}}')
+            elif self._is_conditional_jump(line):
+                m = re.match(r'if\\s+(.+?)\\s+goto\\s+(L\\d+)', line)
+                if m:
+                    cond, target = m.groups()
+                    result.append(f'    {{nid}}{{"{{cond}}?"}}')
+                    jump_edges.append((nid, target, "Y"))
+                    if i + 1 < len(lines_list):
+                        result.append(f'    {{nid}} -->|N| N{{i+1}}')
+            elif self._is_unconditional_jump(line):
+                target = self._get_jump_target(line)
+                result.append(f'    {{nid}}["{{content}}"]')
+                if target:
+                    jump_edges.append((nid, target, None))
+            else:
+                result.append(f'    {{nid}}["{{content}}"]')
+                if i + 1 < len(lines_list):
+                    result.append(f'    {{nid}} --> N{{i+1}}')
+        for src, target, label in jump_edges:
+            if target in label_nodes:
+                if label:
+                    result.append(f'    {{src}} -->|{{label}}| {{label_nodes[target]}}')
+                else:
+                    result.append(f'    {{src}} --> {{label_nodes[target]}}')
+        return "\\n".join(result)
+
+    def generate_block_mermaid(self, tac_code: str) -> str:
+        """基本块模式：一个基本块一个节点"""
+        lines_list = [l.strip() for l in tac_code.strip().split('\\n') if l.strip()]
+        if not lines_list:
+            return "graph TD\\n    empty[无代码]"
+        leaders = {{0}}
+        for i, line in enumerate(lines_list):
+            if self._is_label(line):
+                leaders.add(i)
+        sorted_leaders = sorted(leaders)
+        blocks = []
+        for idx, start in enumerate(sorted_leaders):
+            end = sorted_leaders[idx + 1] if idx + 1 < len(sorted_leaders) else len(lines_list)
+            block_lines = lines_list[start:end]
+            lbl = block_lines[0][:-1] if self._is_label(block_lines[0]) else None
+            blocks.append({{'id': idx, 'lines': block_lines, 'label': lbl}})
+        label_to_block = {{b['label']: b['id'] for b in blocks if b['label']}}
+        result = ["graph TD"]
+        for b in blocks:
+            nid = f"B{{b['id']}}"
+            content = "<br/>".join(b['lines']).replace('"', "'")
+            last = b['lines'][-1]
+            if self._is_conditional_jump(last):
+                result.append(f'    {{nid}}{{"{{content}}"}}')
+            else:
+                result.append(f'    {{nid}}["{{content}}"]')
+        for b in blocks:
+            nid = f"B{{b['id']}}"
+            last = b['lines'][-1]
+            has_cond = any(self._is_conditional_jump(l) for l in b['lines'])
+            has_goto = any(self._is_unconditional_jump(l) for l in b['lines'])
+            if has_cond:
+                for line in b['lines']:
+                    if self._is_conditional_jump(line):
+                        target = self._get_jump_target(line)
+                        if target and target in label_to_block:
+                            result.append(f'    {{nid}} -->|Y| B{{label_to_block[target]}}')
+                        break
+                for line in b['lines']:
+                    if self._is_unconditional_jump(line):
+                        target = self._get_jump_target(line)
+                        if target and target in label_to_block:
+                            result.append(f'    {{nid}} -->|N| B{{label_to_block[target]}}')
+                        break
+                else:
+                    if b['id'] + 1 < len(blocks):
+                        result.append(f'    {{nid}} -->|N| B{{b["id"] + 1}}')
+            elif has_goto:
+                for line in b['lines']:
+                    if self._is_unconditional_jump(line):
+                        target = self._get_jump_target(line)
+                        if target and target in label_to_block:
+                            result.append(f'    {{nid}} --> B{{label_to_block[target]}}')
+                        break
+            else:
+                if b['id'] + 1 < len(blocks):
+                    result.append(f'    {{nid}} --> B{{b["id"] + 1}}')
+        return "\\n".join(result)
+
+# =============================================================================
 # 代码生成器
 # =============================================================================
 
@@ -673,10 +795,15 @@ class GeneratedCompiler:
         code_str = self.parser.get_generated_code()
         return code_str.split('\\n') if code_str else []
 
-    def compile_file(self, input_file: str, output_file: str):
+    def compile_file(self, input_file: str, output_file: str, cfg_mode: str = None):
         """编译文件并保存结果
         
         [SDT] 使用语法制导翻译进行编译
+        
+        参数:
+            input_file: 输入源代码文件
+            output_file: 输出中间代码文件
+            cfg_mode: 控制流图模式 ('instruction' 或 'block')
         """
         source_code = ""
         try:
@@ -684,6 +811,7 @@ class GeneratedCompiler:
                 source_code = f.read()
             
             code_lines = self.compile(source_code)
+            tac_code = '\\n'.join([l for l in code_lines if l.strip()])
             
             with open(output_file, 'w', encoding='utf-8') as f:
                 for line in code_lines:
@@ -692,6 +820,23 @@ class GeneratedCompiler:
             
             print(f"[Success] Compilation completed (Syntax-Directed Translation) -> {{output_file}}")
             print(f"         Generated {{len([l for l in code_lines if l.strip()])}} intermediate code instructions")
+            
+            # 如果指定了CFG模式，生成控制流图
+            if cfg_mode and tac_code:
+                visualizer = FlowVisualizer()
+                if cfg_mode == 'block':
+                    mermaid_code = visualizer.generate_block_mermaid(tac_code)
+                else:
+                    mermaid_code = visualizer.generate_mermaid(tac_code)
+                
+                cfg_file = output_file.rsplit('.', 1)[0] + '_cfg.md'
+                with open(cfg_file, 'w', encoding='utf-8') as f:
+                    f.write('# Control Flow Graph\\n\\n')
+                    f.write('```mermaid\\n')
+                    f.write(mermaid_code)
+                    f.write('\\n```\\n')
+                print(f"         Control flow graph generated -> {{cfg_file}}")
+                
         except SyntaxError as e:
             # 使用 ErrorFormatter 格式化语法/词法错误
             formatter = ErrorFormatter(source_code=source_code, source_file=input_file)
@@ -727,8 +872,17 @@ if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description="自动生成的编译器（SDT版）")
     arg_parser.add_argument("input", help="输入源代码文件")
     arg_parser.add_argument("-o", "--output", default="output.tac", help="输出中间代码文件")
+    arg_parser.add_argument("--cfg", action="store_true", help="生成控制流图（指令模式）")
+    arg_parser.add_argument("--cfg-block", action="store_true", help="生成控制流图（基本块模式）")
 
     args = arg_parser.parse_args()
+    
+    cfg_mode = None
+    if args.cfg:
+        cfg_mode = 'instruction'
+    elif args.cfg_block:
+        cfg_mode = 'block'
+    
     compiler = GeneratedCompiler()
-    compiler.compile_file(args.input, args.output)
+    compiler.compile_file(args.input, args.output, cfg_mode)
 '''
