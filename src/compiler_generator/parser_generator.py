@@ -1102,21 +1102,21 @@ class GeneratedParser:
         elif symbol == 'Factor' and len(children) == 3:
             node.synthesized_value = children[1].synthesized_value
         
+        # 打印: PRINT ( Expr ) ; (必须先检查，因为Stmt也可能匹配赋值)
+        elif symbol == 'Stmt' and children and len(children) >= 5:
+            if children[0].name == "'PRINT'":
+                val = children[2].synthesized_value
+                if val:
+                    self.emit(f"param {{val}}")
+                    self.emit(f"call print, 1")
+        
         # 赋值: ID = Expr ;
-        elif symbol in ['Stmt', 'AssignStmt'] and len(children) >= 3:
+        elif symbol in ['Stmt', 'AssignStmt'] and len(children) >= 4:
             if children[0].name == "'ID'":
                 var = children[0].synthesized_value
                 val = children[2].synthesized_value
                 if var and val:
                     self.emit(f"{{var}} = {{val}}")
-        
-        # 打印: PRINT ( Expr ) ;
-        elif symbol == 'Stmt' and children and children[0].name == "'PRINT'":
-            if len(children) >= 3:
-                val = children[2].synthesized_value
-                if val:
-                    self.emit(f"param {{val}}")
-                    self.emit(f"call print, 1")
         
         # WriteStmt
         elif symbol == 'WriteStmt' and len(children) >= 3:
@@ -1134,10 +1134,20 @@ class GeneratedParser:
                 self.emit(f"{{var}} = {{temp}}")
     
     def _handle_tail(self, tail_node, left_val):
-        """处理表达式尾部"""
+        """处理表达式尾部（支持优化后的文法结构）"""
         if not tail_node or not tail_node.children:
             return left_val
         children = tail_node.children
+        
+        # 如果tail是Expr_LF_TAIL_X -> AddOp的形式
+        if len(children) == 1 and 'AddOp' in children[0].name:
+            return self._handle_add_op(children[0], left_val)
+        
+        # 如果tail是Term_LF_TAIL_X -> MulOp的形式
+        if len(children) == 1 and 'MulOp' in children[0].name:
+            return self._handle_mul_op(children[0], left_val)
+        
+        # 如果tail直接包含操作符（未优化的文法）
         if children and children[0].name in ["'PLUS'", "'MINUS'", "'MUL'", "'DIV'"]:
             op = children[0].synthesized_value
             right = children[1].synthesized_value
@@ -1146,6 +1156,44 @@ class GeneratedParser:
             if len(children) > 2:
                 return self._handle_tail(children[2], temp)
             return temp
+        return left_val
+    
+    def _handle_add_op(self, add_op_node, left_val):
+        """处理AddOp节点"""
+        if not add_op_node or not add_op_node.children:
+            return left_val
+        children = add_op_node.children
+        if len(children) >= 2 and children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
+            op = children[0].synthesized_value
+            right_val = children[1].synthesized_value
+            if op and right_val:
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = {{left_val}} {{op}} {{right_val}}")
+                # 检查是否还有递归的AddOp（通过AddOp_LF_TAIL_X -> AddOp）
+                if len(children) > 2:
+                    tail = children[2]
+                    if tail.children and len(tail.children) == 1 and 'AddOp' in tail.children[0].name:
+                        return self._handle_add_op(tail.children[0], temp)
+                return temp
+        return left_val
+    
+    def _handle_mul_op(self, mul_op_node, left_val):
+        """处理MulOp节点"""
+        if not mul_op_node or not mul_op_node.children:
+            return left_val
+        children = mul_op_node.children
+        if len(children) >= 2 and children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
+            op = children[0].synthesized_value
+            right_val = children[1].synthesized_value
+            if op and right_val:
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = {{left_val}} {{op}} {{right_val}}")
+                # 检查是否还有递归的MulOp（通过MulOp_LF_TAIL_X -> MulOp）
+                if len(children) > 2:
+                    tail = children[2]
+                    if tail.children and len(tail.children) == 1 and 'MulOp' in tail.children[0].name:
+                        return self._handle_mul_op(tail.children[0], temp)
+                return temp
         return left_val
     
     def parse(self, tokens: List):

@@ -30,5 +30,5 @@ Thumbs.db
 test_outputs/
 *.tac
 
-# Generated files
-generated/compiler.py
+# Generated files (所有生成的编译器)
+generated/compiler*.py
