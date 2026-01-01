@@ -1,0 +1,17 @@
+// PL/0 子集示例：read语句测试
+// 测试输入功能
+// 注意：PL/0的read语句格式是 read x; 而不是 read(x);
+
+var x, y, sum;
+
+begin
+    // 读取两个数
+    read x;
+    read y;
+    
+    // 计算和
+    sum = x + y;
+    
+    // 输出结果
+    write(sum);
+end

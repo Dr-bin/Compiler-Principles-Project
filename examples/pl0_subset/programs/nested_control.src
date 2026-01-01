@@ -1,0 +1,28 @@
+// PL/0 子集示例：嵌套控制流测试
+// 测试控制流语句的嵌套（while嵌套while，if嵌套if）
+
+var i, j, k;
+
+begin
+    i = 0;
+    
+    // while嵌套while
+    while (i < 3)
+    {
+        j = 0;
+        while (j < 2)
+        {
+            write(j);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    
+    // if嵌套if
+    k = 10;
+    if (k > 5)
+    {
+        if (k < 20)
+            write(k);
+    }
+end

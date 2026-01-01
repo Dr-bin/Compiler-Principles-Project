@@ -82,6 +82,9 @@ class ParserGenerator:
         self.label_counter: int = 0  # 标签计数器
         self.symbol_table: Dict[str, Dict] = {}  # 符号表
         
+        # [回填技术] 用于控制流语句的回填
+        self.backpatch_stack: List[Dict] = []  # 回填栈，记录需要回填的位置
+        
         # [智能提示] 变量检查相关属性
         self.enable_variable_check = True  # 是否启用变量检查
         self.semantic_errors: List[str] = []  # 收集语义错误
@@ -537,6 +540,7 @@ class ParserGenerator:
         self.label_counter = 0
         self.symbol_table = {}
         self.semantic_errors = []
+        self.backpatch_stack = []  # 重置回填栈
     
     def check_variable_defined(self, var_name: str, token: Token = None) -> bool:
         """检查变量是否已定义，如果未定义则记录错误并提供建议
@@ -596,11 +600,16 @@ class ParserGenerator:
             )
 
     def parse_symbol(self, symbol: str) -> ASTNode:
-        """解析符号并同时进行代码生成（SDT）
+        """解析符号并同时进行代码生成（SDT + 回填技术）
         
         [SDT核心] 在识别产生式后立即执行翻译动作：
         - 终结符：直接匹配并返回节点
         - 非终结符：递归解析子符号，然后根据产生式生成代码
+        
+        [回填技术] 对于控制流语句（if/while），使用回填技术解决代码生成顺序问题：
+        - 在解析Condition后，先生成条件跳转代码（占位）
+        - 然后解析Stmt（语句体代码会在条件跳转之后生成）
+        - 最后回填标签位置
         """
         if symbol.startswith("'") and symbol.endswith("'"):
             token_type = symbol[1:-1]
@@ -631,9 +640,53 @@ class ParserGenerator:
             if not found_production or (found_production == []):
                 return ASTNode(name=symbol, children=[], token=None, synthesized_value=None)
             
-            # 递归解析所有子符号
-            for sym in found_production:
-                children_nodes.append(self.parse_symbol(sym))
+            # [回填技术] 检测是否是控制流语句
+            is_if_stmt = 'If' in symbol and len(found_production) >= 5
+            is_while_stmt = 'While' in symbol and len(found_production) >= 5
+            is_control_flow = is_if_stmt or is_while_stmt
+            
+            # 递归解析所有子符号（对控制流语句特殊处理）
+            if is_control_flow and self.enable_sdt:
+                # 解析前4个子符号：keyword lparen condition rparen
+                for i in range(min(4, len(found_production))):
+                    children_nodes.append(self.parse_symbol(found_production[i]))
+                
+                # 获取condition的值
+                condition_val = children_nodes[2].synthesized_value if len(children_nodes) > 2 else None
+                
+                # [回填] 在解析Stmt之前，先生成条件跳转代码
+                exit_label = self.new_label()
+                loop_label = None
+                
+                if is_while_stmt:
+                    loop_label = self.new_label()
+                    self.emit(f"{loop_label}:")
+                
+                if condition_val:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = not {condition_val}")
+                    self.emit(f"if {temp} goto {exit_label}")
+                
+                # 现在解析Stmt（第5个子符号），代码会生成在条件跳转之后
+                if len(found_production) > 4:
+                    children_nodes.append(self.parse_symbol(found_production[4]))
+                
+                # 解析剩余子符号
+                for i in range(5, len(found_production)):
+                    children_nodes.append(self.parse_symbol(found_production[i]))
+                
+                # [回填] 添加退出标签
+                if is_while_stmt and loop_label:
+                    self.emit(f"goto {loop_label}")
+                self.emit(f"{exit_label}:")
+                
+                node = ASTNode(name=symbol, children=children_nodes)
+                # 控制流语句的SDT已经在上面处理，不需要再调用_apply_translation_scheme
+                return node
+            else:
+                # 非控制流语句：正常递归解析
+                for sym in found_production:
+                    children_nodes.append(self.parse_symbol(sym))
             
             node = ASTNode(name=symbol, children=children_nodes)
             
@@ -875,54 +928,39 @@ class ParserGenerator:
                 self.emit(f"{var_name} = {temp}")
         
         # ====================================================================
-        # 3. 控制流语句（消除硬编码，通过词法规则动态识别）
+        # 3. 控制流语句（已在parse_symbol中使用回填技术处理）
         # ====================================================================
         
-        # while循环：keyword_token punctuation_token Condition punctuation_token Stmt
-        # 通过结构识别：关键字 + '(' + 条件 + ')' + 语句（消除硬编码）
-        elif (len(production) >= 5 and 
-              self._is_keyword_token_in_production(production[0]) and 
-              self._is_punctuation_token_in_production(production[1])):
-            loop_label = self.new_label()
-            exit_label = self.new_label()
-            self.emit(f"{loop_label}:")
-            bool_val = children[2].synthesized_value
-            if bool_val:
-                temp = self.new_temp()
-                self.emit(f"{temp} = not {bool_val}")
-                self.emit(f"if {temp} goto {exit_label}")
-            self.emit(f"goto {loop_label}")
-            self.emit(f"{exit_label}:")
+        # 控制流语句：if/while已经在parse_symbol中使用回填技术处理
+        # 这里不需要再处理（避免重复生成代码）
+        # 注释掉原来的处理逻辑
         
-        # if语句：keyword_token punctuation_token Condition punctuation_token Stmt
-        # 通过结构识别：关键字 + '(' + 条件 + ')' + 语句（消除硬编码）
-        elif (len(production) >= 5 and 
-              self._is_keyword_token_in_production(production[0]) and 
-              self._is_punctuation_token_in_production(production[1]) and
-              len(production) < 6):  # if语句通常是5个元素，while也是，但这里通过位置区分
-            bool_val = children[2].synthesized_value
-            exit_label = self.new_label()
-            if bool_val:
-                temp = self.new_temp()
-                self.emit(f"{temp} = not {bool_val}")
-                self.emit(f"if {temp} goto {exit_label}")
-            self.emit(f"{exit_label}:")
-        
-        # 布尔表达式：通过产生式结构识别（Expr Op Expr模式）
-        # 模式：第一个是表达式（非终结符），第二个是操作符（终结符），第三个是表达式（非终结符）
+        # 布尔表达式/Condition：通过产生式结构识别（Expr Op Expr模式或Expr RelOp Expr模式）
+        # 模式：第一个是表达式（非终结符），第二个是操作符（非终结符或终结符），第三个是表达式（非终结符）
         # 完全通过产生式结构识别，不硬编码token类型
-        elif len(production) >= 3 and not production[0].startswith("'") and production[1].startswith("'") and not production[2].startswith("'"):
-            # 通过产生式结构识别：如果是二元运算符结构，则处理
-            if self._is_binary_operator_by_structure(production, 1):
-                op_node = children[1]
-                if op_node.token:
-                    e1 = children[0].synthesized_value
-                    op_val = op_node.synthesized_value
-                    e2 = children[2].synthesized_value
-                    if e1 and op_val and e2:
-                        # 使用通用的二元运算符处理函数
-                        temp = self._apply_binary_op(op_val, e1, e2)
-                        node.synthesized_value = temp
+        elif len(production) >= 3 and not production[0].startswith("'") and not production[2].startswith("'"):
+            # Condition -> Expr RelOp Expr 或 Expr -> Expr Op Expr
+            # 第二个可能是非终结符（RelOp）或终结符（操作符）
+            if production[1].startswith("'"):
+                # 第二个是终结符：Expr Op Expr
+                if self._is_binary_operator_by_structure(production, 1):
+                    op_node = children[1]
+                    if op_node.token:
+                        e1 = children[0].synthesized_value
+                        op_val = op_node.synthesized_value
+                        e2 = children[2].synthesized_value
+                        if e1 and op_val and e2:
+                            temp = self._apply_binary_op(op_val, e1, e2)
+                            node.synthesized_value = temp
+            else:
+                # 第二个是非终结符：Expr RelOp Expr（Condition产生式）
+                e1 = children[0].synthesized_value
+                relop_val = children[1].synthesized_value  # RelOp的值
+                e2 = children[2].synthesized_value
+                if e1 and relop_val and e2:
+                    temp = self.new_temp()
+                    self.emit(f"{temp} = {e1} {relop_val} {e2}")
+                    node.synthesized_value = temp
         
         # 关系运算符（单个token）：通过结构识别（单个终结符）
         # 模式：单个终结符，且是操作符token（消除硬编码排除列表）
@@ -1315,6 +1353,9 @@ class GeneratedParser:
         # 从词法规则中提取token分类
         if self.lexer_rules:
             self._extract_token_categories()
+        
+        # [回填技术] 用于控制流语句的回填
+        self.backpatch_stack = []
     
     # [消除硬编码] 从词法规则中提取token分类
     def _extract_token_categories(self):
@@ -1366,6 +1407,7 @@ class GeneratedParser:
         self.temp_counter = 0
         self.label_counter = 0
         self.symbol_table = {{}}
+        self.backpatch_stack = []  # 重置回填栈
     
     def _is_identifier_token(self, token_type: str) -> bool:
         """判断token类型是否是标识符（消除硬编码）"""
@@ -1465,10 +1507,59 @@ class GeneratedParser:
                         self._apply_sdt_rules(symbol, found_production, node)
                     return node
                 
+                # [回填技术] 检测是否是控制流语句
+                is_if_stmt = 'If' in symbol and len(found_production) >= 5
+                is_while_stmt = 'While' in symbol and len(found_production) >= 5
+                is_control_flow = is_if_stmt or is_while_stmt
+                
                 children = []
-                for sym in found_production:
-                    child = self.parse_symbol(sym)
-                    children.append(child)
+                
+                # 对控制流语句使用回填技术
+                if is_control_flow:
+                    # 解析前4个子符号：keyword lparen condition rparen
+                    for i in range(min(4, len(found_production))):
+                        child = self.parse_symbol(found_production[i])
+                        children.append(child)
+                    
+                    # 获取condition的值
+                    condition_val = children[2].synthesized_value if len(children) > 2 else None
+                    
+                    # [回填] 在解析Stmt之前，先生成条件跳转代码
+                    exit_label = self.new_label()
+                    loop_label = None
+                    
+                    if is_while_stmt:
+                        loop_label = self.new_label()
+                        self.emit(f"{{loop_label}}:")
+                    
+                    if condition_val:
+                        temp = self.new_temp()
+                        self.emit(f"{{temp}} = not {{condition_val}}")
+                        self.emit(f"if {{temp}} goto {{exit_label}}")
+                    
+                    # 现在解析Stmt（第5个子符号），代码会生成在条件跳转之后
+                    if len(found_production) > 4:
+                        child = self.parse_symbol(found_production[4])
+                        children.append(child)
+                    
+                    # 解析剩余子符号
+                    for i in range(5, len(found_production)):
+                        child = self.parse_symbol(found_production[i])
+                        children.append(child)
+                    
+                    # [回填] 添加退出标签
+                    if is_while_stmt and loop_label:
+                        self.emit(f"goto {{loop_label}}")
+                    self.emit(f"{{exit_label}}:")
+                    
+                    node = ASTNode(name=symbol, children=children)
+                    # 控制流语句的SDT已经在上面处理，不需要再调用_apply_sdt_rules
+                    return node
+                else:
+                    # 非控制流语句：正常递归解析
+                    for sym in found_production:
+                        child = self.parse_symbol(sym)
+                        children.append(child)
                 
                 node = ASTNode(name=symbol, children=children)
                 
@@ -1686,19 +1777,29 @@ class GeneratedParser:
                 tail = children[1]
                 collect_ids_from_tail(tail)
         
-        # 布尔表达式：通过结构识别（Expr Op Expr，其中Op是关系运算符）
-        # 模式：第一个是表达式，第二个是操作符（终结符），第三个是表达式
-        elif len(production) >= 3 and not production[0].startswith("'") and production[1].startswith("'") and not production[2].startswith("'"):
-            # 检查中间的操作符是否是关系运算符（通过token类型判断）
-            op_token_type = production[1][1:-1]
-            # 关系运算符通常是比较操作符（可以通过结构识别：两个表达式之间的操作符）
-            if children[1].token and children[1].token.type == op_token_type:
+        # 布尔表达式/Condition：通过结构识别（Expr RelOp Expr 或 Expr Op Expr）
+        elif len(production) >= 3 and not production[0].startswith("'") and not production[2].startswith("'"):
+            # Condition -> Expr RelOp Expr 或 Expr -> Expr Op Expr
+            # 第二个可能是非终结符（RelOp）或终结符（操作符）
+            if production[1].startswith("'"):
+                # 第二个是终结符：Expr Op Expr
+                op_token_type = production[1][1:-1]
+                if children[1].token and children[1].token.type == op_token_type:
+                    e1 = children[0].synthesized_value
+                    op = children[1].synthesized_value
+                    e2 = children[2].synthesized_value
+                    if e1 and op and e2:
+                        temp = self.new_temp()
+                        self.emit(f"{{temp}} = {{e1}} {{op}} {{e2}}")
+                        node.synthesized_value = temp
+            else:
+                # 第二个是非终结符：Expr RelOp Expr（Condition产生式）
                 e1 = children[0].synthesized_value
-                op = children[1].synthesized_value
+                relop_val = children[1].synthesized_value  # RelOp的值
                 e2 = children[2].synthesized_value
-                if e1 and op and e2:
+                if e1 and relop_val and e2:
                     temp = self.new_temp()
-                    self.emit(f"{{temp}} = {{e1}} {{op}} {{e2}}")
+                    self.emit(f"{{temp}} = {{e1}} {{relop_val}} {{e2}}")
                     node.synthesized_value = temp
         
         # 关系运算符（单个token）：通过结构识别（单个终结符，消除硬编码）
@@ -1708,32 +1809,34 @@ class GeneratedParser:
             if op_token_type in self.operator_tokens:
                 node.synthesized_value = children[0].synthesized_value
         
-        # while循环：keyword_token punctuation_token Condition punctuation_token Stmt（消除硬编码）
+        # 控制流语句：keyword_token punctuation_token Condition punctuation_token Stmt（消除硬编码）
         elif (len(production) >= 5 and 
               production[0].startswith("'") and production[0][1:-1] in self.keyword_tokens and
               production[1].startswith("'") and production[1][1:-1] in self.punctuation_tokens):
-            loop_label = self.new_label()
-            exit_label = self.new_label()
-            self.emit(f"{{loop_label}}:")
+            
             bool_val = children[2].synthesized_value
-            if bool_val:
-                temp = self.new_temp()
-                self.emit(f"{{temp}} = not {{bool_val}}")
-                self.emit(f"if {{temp}} goto {{exit_label}}")
-            self.emit(f"goto {{loop_label}}")
-            self.emit(f"{{exit_label}}:")
-        
-        # if语句：keyword_token punctuation_token Condition punctuation_token Stmt（消除硬编码）
-        elif (len(production) >= 5 and len(production) < 6 and
-              production[0].startswith("'") and production[0][1:-1] in self.keyword_tokens and
-              production[1].startswith("'") and production[1][1:-1] in self.punctuation_tokens):
-            bool_val = children[2].synthesized_value
-            exit_label = self.new_label()
-            if bool_val:
-                temp = self.new_temp()
-                self.emit(f"{{temp}} = not {{bool_val}}")
-                self.emit(f"if {{temp}} goto {{exit_label}}")
-            self.emit(f"{{exit_label}}:")
+            stmt_code_start = len(self.code_buffer)
+            
+            # 通过非终结符名称区分if和while
+            if 'While' in symbol or 'WHILE' in symbol or 'Loop' in symbol:
+                # while循环：使用代码插入
+                loop_label = self.new_label()
+                exit_label = self.new_label()
+                self.code_buffer.insert(stmt_code_start, f"{{loop_label}}:")
+                if bool_val:
+                    temp = self.new_temp()
+                    self.code_buffer.insert(stmt_code_start + 1, f"{{temp}} = not {{bool_val}}")
+                    self.code_buffer.insert(stmt_code_start + 2, f"if {{temp}} goto {{exit_label}}")
+                self.emit(f"goto {{loop_label}}")
+                self.emit(f"{{exit_label}}:")
+            else:
+                # if语句：使用代码插入
+                exit_label = self.new_label()
+                if bool_val:
+                    temp = self.new_temp()
+                    self.code_buffer.insert(stmt_code_start, f"{{temp}} = not {{bool_val}}")
+                    self.code_buffer.insert(stmt_code_start + 1, f"if {{temp}} goto {{exit_label}}")
+                self.emit(f"{{exit_label}}")
         
         # 其他情况（不匹配任何已知模式的结构性节点，不生成代码）
     
