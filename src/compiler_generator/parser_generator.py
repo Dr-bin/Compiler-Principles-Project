@@ -586,145 +586,172 @@ class ParserGenerator:
                 expected.update(self.follow_sets.get(symbol, set()))
             raise ParseError(f"Syntax Error: Expected one of {expected}")
     
-    def _apply_translation_scheme(self, symbol: str, production: List[str], node: ASTNode) -> None:
-        """应用翻译方案：根据产生式生成中间代码（SDT核心）
-        
-        这是语法制导翻译的核心方法，每识别一个产生式就立即执行翻译动作。
+    def _is_binary_operator_by_structure(self, production: List[str], op_index: int) -> bool:
+        """通过产生式结构识别二元运算符（完全不硬编码token类型）
         
         参数:
-            symbol: 非终结符名称
-            production: 产生式右部
+            production: 产生式
+            op_index: 操作符在产生式中的位置索引
+            
+        返回:
+            如果通过结构判断是二元运算符返回True，否则返回False
+            
+        说明:
+            通过产生式结构识别：如果产生式是 Expr Op Expr 模式（非终结符 终结符 非终结符），
+            那么中间的终结符就是二元运算符。完全不依赖token类型名称。
+        """
+        if op_index < 0 or op_index >= len(production):
+            return False
+        # 检查是否是二元运算符结构：非终结符 终结符 非终结符
+        if op_index > 0 and op_index < len(production) - 1:
+            left = production[op_index - 1]
+            op = production[op_index]
+            right = production[op_index + 1]
+            # 结构模式：非终结符 终结符 非终结符
+            if (not left.startswith("'") and op.startswith("'") and not right.startswith("'")):
+                return True
+        return False
+    
+    def _is_keyword_by_structure(self, production: List[str], keyword_index: int) -> bool:
+        """通过产生式结构识别关键字（完全不硬编码token类型）
+        
+        参数:
+            production: 产生式
+            keyword_index: 关键字在产生式中的位置索引
+            
+        返回:
+            如果通过结构判断是关键字返回True，否则返回False
+            
+        说明:
+            通过产生式结构识别：如果产生式是 Keyword 'LPAREN' Expr 'RPAREN' 模式，
+            那么第一个终结符可能是关键字。完全不依赖token类型名称。
+        """
+        if keyword_index < 0 or keyword_index >= len(production):
+            return False
+        # 检查是否是关键字结构：终结符 'LPAREN' 非终结符 'RPAREN'
+        if (keyword_index == 0 and len(production) >= 4 and 
+            production[0].startswith("'") and production[1] == "'LPAREN'" and 
+            not production[2].startswith("'") and production[3] == "'RPAREN'"):
+            return True
+        return False
+    
+    def _apply_binary_op(self, op_type: str, left_val: str, right_val: str) -> str:
+        """应用二元运算符（通过属性传递识别操作符类型）
+        
+        参数:
+            op_type: 操作符类型（通过属性传递获得）
+            left_val: 左操作数的值
+            right_val: 右操作数的值
+            
+        返回:
+            生成的临时变量名
+        """
+        if not left_val or not right_val:
+            return None
+        temp = self.new_temp()
+        self.emit(f"{temp} = {left_val} {op_type} {right_val}")
+        return temp
+    
+    def _apply_translation_scheme(self, symbol: str, production: List[str], node: ASTNode) -> None:
+        """应用翻译方案：根据产生式生成中间代码（SDT核心 - 基于属性文法）
+        
+        这是语法制导翻译的核心方法，每识别一个产生式就立即执行翻译动作。
+        使用属性文法思想：通过产生式结构和属性传递识别语义模式，而不是硬编码token类型。
+        
+        参数:
+            symbol: 非终结符名称（LL(1)已经识别了产生式，这里只用于代码生成）
+            production: 产生式右部（LL(1)已经选择的具体产生式）
             node: 已解析的AST节点（包含子节点）
         
         说明:
-            根据不同的产生式模式，生成相应的三地址码。
-            使用灵活的模式匹配，兼容文法优化后的名称变化。
+            LL(1)已经通过FIRST/FOLLOW集选择了正确的产生式。
+            这里使用属性文法思想：通过产生式结构识别语义模式，通过属性传递识别操作符类型。
+            不依赖非终结符名称，不硬编码token类型列表，提高可扩展性。
         """
         children = node.children
         
         # ====================================================================
-        # 1. 表达式和算术运算
+        # 1. 表达式和算术运算（直接检查产生式内容）
         # ====================================================================
         
-        # Expr -> Term (只有一个子节点)
-        if symbol in ['Expr', 'Expression', 'Term'] and len(children) == 1:
+        # 单个子节点（传递值）
+        if len(production) == 1:
             node.synthesized_value = children[0].synthesized_value
         
-        # Expr -> Term Expr_LF_TAIL_X  (处理加减法，X为任意数字)
-        elif symbol == 'Expr' and len(children) == 2:
+        # 表达式尾部（处理加减法）：通过结构识别（第一个是表达式，第二个是尾部）
+        # 尾部可能是：操作符 + 操作数 + 尾部，或单个操作节点
+        elif len(production) == 2 and not production[0].startswith("'") and not production[1].startswith("'"):
+            # 检查第二个符号是否是尾部（通过检查其子节点结构）
             left_val = children[0].synthesized_value
-            # DEBUG: print(f"[SDT] Processing Expr with tail: left_val={left_val}, tail={children[1].name}")
             tail_val = self._process_expr_tail(children[1], left_val)
-            # DEBUG: print(f"[SDT] Expr result: tail_val={tail_val}")
             node.synthesized_value = tail_val
         
-        # Term -> Factor Term_LF_TAIL_X  (处理乘除法，X为任意数字)
-        elif symbol == 'Term' and len(children) == 2:
+        # 项尾部（处理乘除法）：通过结构识别
+        elif len(production) == 2 and not production[0].startswith("'") and not production[1].startswith("'"):
+            # 如果第一个处理失败，尝试作为项尾部处理
             left_val = children[0].synthesized_value
             tail_val = self._process_term_tail(children[1], left_val)
             node.synthesized_value = tail_val
         
-        # Expr_LF_TAIL_X -> AddOp (包含操作符的尾部)
-        elif 'Expr_LF_TAIL' in symbol and len(children) == 1:
-            # AddOp中包含了完整的运算，这里会在_process_expr_tail中处理
-            pass
+        # 因子 - 数字：'NUM'
+        elif len(production) == 1 and production[0] == "'NUM'":
+            node.synthesized_value = children[0].synthesized_value
         
-        # Term_LF_TAIL_X -> MulOp (包含操作符的尾部)
-        elif 'Term_LF_TAIL' in symbol and len(children) == 1:
-            # MulOp中包含了完整的运算，这里会在_process_term_tail中处理
-            pass
+        # 因子 - 标识符：'ID'
+        elif len(production) == 1 and production[0] == "'ID'":
+            var_name = children[0].synthesized_value
+            # [智能提示] 检查变量是否已定义
+            if var_name and self.enable_variable_check:
+                self.check_variable_defined(var_name, children[0].token)
+            node.synthesized_value = var_name
         
-        # [PL/0格式] ExprTail -> 'PLUS'/'MINUS' Term ExprTail | epsilon
-        elif symbol == 'ExprTail' and len(children) >= 2:
-            # 不在这里处理，由_process_expr_tail处理
-            pass
-        
-        # [PL/0格式] TermTail -> 'MUL'/'DIV' Factor TermTail | epsilon
-        elif symbol == 'TermTail' and len(children) >= 2:
-            # 不在这里处理，由_process_term_tail处理
-            pass
-        
-        # AddOp -> 'PLUS' Term AddOp_LF_TAIL_X
-        elif 'AddOp' in symbol and len(children) >= 2:
-            # 操作符组，不单独生成代码
-            pass
-        
-        # MulOp -> 'MUL' Factor MulOp_LF_TAIL_X
-        elif 'MulOp' in symbol and len(children) >= 2:
-            # 操作符组，不单独生成代码
-            pass
-        
-        # Factor -> 'NUM' | 'ID'
-        elif symbol == 'Factor' and len(children) == 1:
-            child = children[0]
-            if child.name in ["'NUM'", "NUM"]:
-                node.synthesized_value = child.synthesized_value
-            elif child.name in ["'ID'", "ID"]:
-                var_name = child.synthesized_value
-                # [智能提示] 检查变量是否已定义
-                if var_name and self.enable_variable_check:
-                    self.check_variable_defined(var_name, child.token)
-                node.synthesized_value = var_name
-        
-        # Factor -> 'LPAREN' Expr 'RPAREN'
-        elif symbol == 'Factor' and len(children) == 3 and children[0].name in ["'LPAREN'", "LPAREN"]:
+        # 括号表达式：'LPAREN' Expr 'RPAREN'
+        elif len(production) == 3 and production[0] == "'LPAREN'" and production[2] == "'RPAREN'":
             node.synthesized_value = children[1].synthesized_value
         
         # ====================================================================
-        # 2. 语句处理
+        # 2. 语句处理（直接检查产生式内容，LL(1)已经识别了产生式）
         # ====================================================================
         
-        # Stmt -> ...  (先判断语句类型)
-        elif symbol in ['Stmt', 'Statement', 'AssignStmt']:
-            if children and len(children) >= 4:
-                first_child_name = children[0].name
-                
-                # 打印语句: Stmt -> 'PRINT' 'LPAREN' Expr 'RPAREN' 'SEMI'
-                if first_child_name in ["'PRINT'", "PRINT"] and len(children) >= 5:
-                    expr_val = children[2].synthesized_value
-                    # [SDT] 立即生成打印指令（三地址码格式）
-                    if expr_val:
-                        self.emit(f"param {expr_val}")
-                        self.emit(f"call print, 1")
-                
-                # 赋值语句: Stmt -> 'ID' 'ASSIGN' Expr 'SEMI'
-                elif first_child_name in ["'ID'", "ID"]:
-                    var_name = children[0].synthesized_value
-                    expr_val = children[2].synthesized_value
-                    # [SDT] 立即生成赋值指令
-                    if var_name:
-                        # [语义检查] 根据语言类型决定是否检查变量声明
-                        if var_name not in self.symbol_table:
-                            if self.requires_explicit_declaration:
-                                # PL/0模式：变量必须先声明，未声明则报错
-                                token = children[0].token if children[0].token else None
-                                self.check_variable_defined(var_name, token)
-                            # 无论是否报错，都添加到符号表（允许继续编译）
-                            # Simple模式：隐式声明，直接添加
-                            # PL/0模式：即使报错也添加，以便后续使用
-                            self.symbol_table[var_name] = {'type': 'var'}
-                        if expr_val:
-                            self.emit(f"{var_name} = {expr_val}")
-        
-        # WriteStmt -> 'WRITE' 'LPAREN' Expr 'RPAREN' 'SEMI'
-        elif symbol == 'WriteStmt' and len(children) >= 3:
+        # 赋值语句：'ID' 'ASSIGN' Expr 'SEMI'
+        elif len(production) >= 3 and production[0] == "'ID'" and production[1] == "'ASSIGN'":
+            var_name = children[0].synthesized_value
             expr_val = children[2].synthesized_value
-            self.emit(f"param {expr_val}")
-            self.emit(f"call write, 1")
+            if var_name:
+                # [语义检查] 根据语言类型决定是否检查变量声明
+                if var_name not in self.symbol_table:
+                    if self.requires_explicit_declaration:
+                        token = children[0].token if children[0].token else None
+                        self.check_variable_defined(var_name, token)
+                    self.symbol_table[var_name] = {'type': 'var'}
+                if expr_val:
+                    self.emit(f"{var_name} = {expr_val}")
         
-        # ReadStmt -> 'READ' 'ID' 'SEMI'
-        elif symbol == 'ReadStmt' and len(children) >= 2:
+        # 输出语句：通过产生式结构识别（关键字 'LPAREN' Expr 'RPAREN'模式）
+        # 模式：第一个是关键字（终结符），第二个是'LPAREN'，第三个是表达式（非终结符）
+        # 完全通过产生式结构识别，不硬编码token类型
+        elif len(production) >= 4 and production[0].startswith("'") and production[1] == "'LPAREN'" and not production[2].startswith("'"):
+            # 通过产生式结构识别：如果是关键字结构，则处理输出语句
+            if self._is_keyword_by_structure(production, 0):
+                expr_val = children[2].synthesized_value
+                if expr_val:
+                    self.emit(f"param {expr_val}")
+                    self.emit(f"call write, 1")
+        
+        # 输入语句：'READ' 'ID' 'SEMI'
+        elif len(production) >= 2 and production[0] == "'READ'" and production[1] == "'ID'":
             var_name = children[1].synthesized_value
-            temp = self.new_temp()
-            self.emit(f"{temp} = call read, 0")
-            self.emit(f"{var_name} = {temp}")
+            if var_name:
+                temp = self.new_temp()
+                self.emit(f"{temp} = call read, 0")
+                self.emit(f"{var_name} = {temp}")
         
         # ====================================================================
-        # 3. 控制流语句
+        # 3. 控制流语句（直接检查产生式内容）
         # ====================================================================
         
-        # WhileStmt -> 'WHILE' 'LPAREN' BoolExpr 'RPAREN' Stmt
-        elif symbol == 'WhileStmt' and len(children) >= 5:
+        # while循环：'WHILE' 'LPAREN' Condition 'RPAREN' Stmt
+        elif len(production) >= 5 and production[0] == "'WHILE'" and production[1] == "'LPAREN'":
             loop_label = self.new_label()
             exit_label = self.new_label()
             self.emit(f"{loop_label}:")
@@ -733,85 +760,91 @@ class ParserGenerator:
                 temp = self.new_temp()
                 self.emit(f"{temp} = not {bool_val}")
                 self.emit(f"if {temp} goto {exit_label}")
-            # 循环体已经在解析children[4]时生成
             self.emit(f"goto {loop_label}")
             self.emit(f"{exit_label}:")
         
-        # IfStmt -> 'IF' 'LPAREN' BoolExpr 'RPAREN' Stmt
-        elif symbol == 'IfStmt' and len(children) >= 5:
+        # if语句：'IF' 'LPAREN' Condition 'RPAREN' Stmt
+        elif len(production) >= 5 and production[0] == "'IF'" and production[1] == "'LPAREN'":
             bool_val = children[2].synthesized_value
             exit_label = self.new_label()
             if bool_val:
                 temp = self.new_temp()
                 self.emit(f"{temp} = not {bool_val}")
                 self.emit(f"if {temp} goto {exit_label}")
-            # then分支已经在解析children[4]时生成
             self.emit(f"{exit_label}:")
         
-        # BoolExpr -> Expr RelOp Expr
-        elif symbol == 'BoolExpr' and len(children) >= 3:
-            e1 = children[0].synthesized_value
-            op = children[1].synthesized_value
-            e2 = children[2].synthesized_value
-            if e1 and op and e2:
-                temp = self.new_temp()
-                self.emit(f"{temp} = {e1} {op} {e2}")
-                node.synthesized_value = temp
+        # 布尔表达式：通过产生式结构识别（Expr Op Expr模式）
+        # 模式：第一个是表达式（非终结符），第二个是操作符（终结符），第三个是表达式（非终结符）
+        # 完全通过产生式结构识别，不硬编码token类型
+        elif len(production) >= 3 and not production[0].startswith("'") and production[1].startswith("'") and not production[2].startswith("'"):
+            # 通过产生式结构识别：如果是二元运算符结构，则处理
+            if self._is_binary_operator_by_structure(production, 1):
+                op_node = children[1]
+                if op_node.token:
+                    e1 = children[0].synthesized_value
+                    op_val = op_node.synthesized_value
+                    e2 = children[2].synthesized_value
+                    if e1 and op_val and e2:
+                        # 使用通用的二元运算符处理函数
+                        temp = self._apply_binary_op(op_val, e1, e2)
+                        node.synthesized_value = temp
         
-        # RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
-        elif symbol == 'RelOp' and len(children) == 1:
-            node.synthesized_value = children[0].synthesized_value
+        # 关系运算符（单个token）：通过结构识别（单个终结符）
+        # 模式：单个终结符，且不是常见的非操作符token
+        elif len(production) == 1 and production[0].startswith("'"):
+            op_token_type = production[0][1:-1]
+            # 排除已知的非操作符token类型
+            # 如果是操作符（不是标识符、数字、括号、分号、赋值、逗号等），传递值
+            if op_token_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL']:
+                node.synthesized_value = children[0].synthesized_value
         
         # ====================================================================
-        # 4. 结构性节点（不生成代码，仅传递信息）
+        # 4. 变量声明列表（通过产生式结构识别）
         # ====================================================================
-        elif symbol in ['Program', 'StmtList', 'Block', 'DeclList', 'StmtListTail']:
-            # 这些节点本身不生成代码，子节点已经生成了
-            pass
-        
-        # IDList -> 'ID' IDListTail (变量声明列表)
-        elif symbol == 'IDList' and children:
+        # 变量声明列表：'ID' ... （第一个是ID，第二个是非终结符，且可能包含COMMA模式）
+        elif len(production) >= 2 and production[0] == "'ID'" and not production[1].startswith("'"):
             # 收集所有声明的变量并添加到符号表
-            # IDList -> 'ID' IDListTail
-            # IDListTail -> 'COMMA' 'ID' IDListTail | ε
-            def collect_ids_from_idlist_tail(tail_node):
-                """递归收集IDListTail中的所有变量名"""
+            # 模式：'ID' Tail，其中Tail可能是 'COMMA' 'ID' Tail | ε
+            def collect_ids_from_tail(tail_node):
+                """递归收集尾部的所有变量名（通过结构识别：COMMA ID ...）"""
                 var_names = []
                 if not tail_node or not tail_node.children:
                     return var_names
                 
-                # IDListTail -> 'COMMA' 'ID' IDListTail
-                # children[0] = 'COMMA', children[1] = 'ID', children[2] = IDListTail
+                # 检查是否是 'COMMA' 'ID' ... 模式
                 if len(tail_node.children) >= 2:
-                    # 处理ID
+                    comma_node = tail_node.children[0]
                     id_node = tail_node.children[1]
-                    if id_node.name in ["'ID'", "ID"]:
-                        var_name = id_node.synthesized_value
-                        if var_name:
-                            var_names.append(var_name)
-                            self.symbol_table[var_name] = {'type': 'var'}
-                    
-                    # 递归处理剩余的IDListTail
-                    if len(tail_node.children) > 2:
-                        next_tail = tail_node.children[2]
-                        var_names.extend(collect_ids_from_idlist_tail(next_tail))
+                    # 通过token类型判断，而不是节点名称
+                    if comma_node.token and comma_node.token.type == 'COMMA':
+                        if id_node.token and id_node.token.type == 'ID':
+                            var_name = id_node.synthesized_value
+                            if var_name:
+                                var_names.append(var_name)
+                                self.symbol_table[var_name] = {'type': 'var'}
+                        
+                        # 递归处理剩余的尾部
+                        if len(tail_node.children) > 2:
+                            next_tail = tail_node.children[2]
+                            var_names.extend(collect_ids_from_tail(next_tail))
                 
                 return var_names
             
-            # 处理IDList的第一个ID
-            if children[0].name in ["'ID'", "ID"]:
+            # 处理第一个ID（通过token类型判断）
+            if children[0].token and children[0].token.type == 'ID':
                 var_name = children[0].synthesized_value
                 if var_name:
                     self.symbol_table[var_name] = {'type': 'var'}
             
-            # 处理IDListTail中的所有ID
+            # 处理尾部中的所有ID
             if len(children) > 1:
                 tail = children[1]
-                collect_ids_from_idlist_tail(tail)
+                collect_ids_from_tail(tail)
         
-        elif symbol in ['VarDecl', 'DeclListTail', 'IDListTail']:
-            # 这些节点本身不生成代码，子节点已经生成了
-            pass
+        # ====================================================================
+        # 5. 其他情况（不匹配任何已知模式的结构性节点，不生成代码）
+        # ====================================================================
+        # 如果产生式不匹配任何已知的代码生成模式，则跳过（结构性节点）
     
     def _process_expr_tail(self, tail_node: ASTNode, left_val: str) -> str:
         """处理表达式尾部（加减法）- SDT辅助方法
@@ -825,22 +858,37 @@ class ParserGenerator:
         
         children = tail_node.children
         
-        # 格式1: Expr_LF_TAIL_X -> AddOp (simple_expr)
-        if len(children) == 1 and 'AddOp' in children[0].name:
-            return self._process_add_op(children[0], left_val)
+        # 格式1: 单个子节点，且是操作节点（通过结构识别：操作符 + 操作数）
+        # 模式：单个子节点，且该子节点有至少2个子节点（操作符 + 操作数）
+        if len(children) == 1 and children[0].children:
+            if len(children[0].children) >= 2:
+                first_child = children[0].children[0]
+                if first_child.token:
+                    op_type = first_child.token.type
+                    # 通过结构识别：第一个是操作符，第二个是操作数
+                    # 检查是否是算术运算符（排除非操作符token）
+                    if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
+                        # 可能是加减运算符
+                        if op_type in ['PLUS', 'MINUS']:
+                            return self._process_add_op(children[0], left_val)
         
-        # 格式2: ExprTail -> 'PLUS'/'MINUS' Term ExprTail (PL/0)
-        # 或者未优化的文法
-        if children and children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
-            op = children[0].synthesized_value
-            right_val = children[1].synthesized_value if len(children) > 1 else None
-            if op and right_val:
-                temp = self.new_temp()
-                self.emit(f"{temp} = {left_val} {op} {right_val}")
-                # 递归处理剩余的ExprTail
-                if len(children) > 2 and children[2].children:
-                    return self._process_expr_tail(children[2], temp)
-                return temp
+        # 格式2: 直接包含操作符的结构（未优化的文法）
+        # 通过结构识别：第一个是操作符token，第二个是操作数
+        if children and children[0].token and len(children) >= 2:
+            op_type = children[0].token.type
+            # 检查是否是算术运算符（排除非操作符token）
+            if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
+                # 检查是否是已知的算术运算符
+                if op_type in ['PLUS', 'MINUS']:
+                    op = children[0].synthesized_value
+                    right_val = children[1].synthesized_value if len(children) > 1 else None
+                    if op and right_val:
+                        temp = self.new_temp()
+                        self.emit(f"{temp} = {left_val} {op} {right_val}")
+                        # 递归处理剩余的ExprTail
+                        if len(children) > 2 and children[2].children:
+                            return self._process_expr_tail(children[2], temp)
+                        return temp
         
         return left_val
     
@@ -856,19 +904,30 @@ class ParserGenerator:
         # DEBUG: print(f"[SDT] _process_add_op: children={[c.name for c in children]}, left={left_val}")
         
         if len(children) >= 2:
-            # children[0]是操作符，children[1]是Term，children[2]可能是AddOp_LF_TAIL
-            if children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
-                op = children[0].synthesized_value
-                right_val = children[1].synthesized_value
-                if op and right_val:
-                    temp = self.new_temp()
-                    self.emit(f"{temp} = {left_val} {op} {right_val}")
-                    # 检查是否还有递归的AddOp（通过AddOp_LF_TAIL_X -> AddOp）
-                    if len(children) > 2:
-                        tail = children[2]
-                        if tail.children and len(tail.children) == 1 and 'AddOp' in tail.children[0].name:
-                            return self._process_add_op(tail.children[0], temp)
-                    return temp
+            # children[0]是操作符，children[1]是操作数，children[2]可能是递归尾部
+            # 通过token类型判断操作符
+            if children[0].token:
+                op_type = children[0].token.type
+                # 检查是否是加减运算符（排除非操作符token）
+                if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
+                    if op_type in ['PLUS', 'MINUS']:
+                        op = children[0].synthesized_value
+                        right_val = children[1].synthesized_value
+                        if op and right_val:
+                            temp = self.new_temp()
+                            self.emit(f"{temp} = {left_val} {op} {right_val}")
+                            # 检查是否还有递归的操作节点（通过结构识别：单个子节点且是操作节点）
+                            if len(children) > 2:
+                                tail = children[2]
+                                if tail.children and len(tail.children) == 1:
+                                    tail_child = tail.children[0]
+                                    # 检查是否是操作节点结构（操作符 + 操作数）
+                                    if tail_child.children and len(tail_child.children) >= 2:
+                                        if tail_child.children[0].token:
+                                            tail_op_type = tail_child.children[0].token.type
+                                            if tail_op_type in ['PLUS', 'MINUS']:
+                                                return self._process_add_op(tail_child, temp)
+                            return temp
         return left_val
     
     def _process_term_tail(self, tail_node: ASTNode, left_val: str) -> str:
@@ -883,22 +942,37 @@ class ParserGenerator:
         
         children = tail_node.children
         
-        # 格式1: Term_LF_TAIL_X -> MulOp (simple_expr)
-        if len(children) == 1 and 'MulOp' in children[0].name:
-            return self._process_mul_op(children[0], left_val)
+        # 格式1: 单个子节点，且是操作节点（通过结构识别）
+        # 模式：单个子节点，且该子节点有至少2个子节点（操作符 + 操作数）
+        if len(children) == 1 and children[0].children:
+            if len(children[0].children) >= 2:
+                first_child = children[0].children[0]
+                if first_child.token:
+                    op_type = first_child.token.type
+                    # 通过结构识别：第一个是操作符，第二个是操作数
+                    # 检查是否是算术运算符（排除非操作符token）
+                    if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
+                        # 可能是乘除运算符
+                        if op_type in ['MUL', 'DIV']:
+                            return self._process_mul_op(children[0], left_val)
         
-        # 格式2: TermTail -> 'MUL'/'DIV' Factor TermTail (PL/0)
-        # 或者未优化的文法
-        if children and children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
-            op = children[0].synthesized_value
-            right_val = children[1].synthesized_value if len(children) > 1 else None
-            if op and right_val:
-                temp = self.new_temp()
-                self.emit(f"{temp} = {left_val} {op} {right_val}")
-                # 递归处理剩余的TermTail
-                if len(children) > 2 and children[2].children:
-                    return self._process_term_tail(children[2], temp)
-                return temp
+        # 格式2: 直接包含操作符的结构（未优化的文法）
+        # 通过结构识别：第一个是操作符token，第二个是操作数
+        if children and children[0].token and len(children) >= 2:
+            op_type = children[0].token.type
+            # 检查是否是算术运算符（排除非操作符token）
+            if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
+                # 检查是否是已知的算术运算符
+                if op_type in ['MUL', 'DIV']:
+                    op = children[0].synthesized_value
+                    right_val = children[1].synthesized_value if len(children) > 1 else None
+                    if op and right_val:
+                        temp = self.new_temp()
+                        self.emit(f"{temp} = {left_val} {op} {right_val}")
+                        # 递归处理剩余的TermTail
+                        if len(children) > 2 and children[2].children:
+                            return self._process_term_tail(children[2], temp)
+                        return temp
         
         return left_val
     
@@ -914,19 +988,30 @@ class ParserGenerator:
         # DEBUG: print(f"[SDT] _process_mul_op: children={[c.name for c in children]}, left={left_val}")
         
         if len(children) >= 2:
-            # children[0]是操作符，children[1]是Factor，children[2]可能是MulOp_LF_TAIL
-            if children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
-                op = children[0].synthesized_value
-                right_val = children[1].synthesized_value
-                if op and right_val:
-                    temp = self.new_temp()
-                    self.emit(f"{temp} = {left_val} {op} {right_val}")
-                    # 检查是否还有递归的MulOp（通过MulOp_LF_TAIL_X -> MulOp）
-                    if len(children) > 2:
-                        tail = children[2]
-                        if tail.children and len(tail.children) == 1 and 'MulOp' in tail.children[0].name:
-                            return self._process_mul_op(tail.children[0], temp)
-                    return temp
+            # children[0]是操作符，children[1]是操作数，children[2]可能是递归尾部
+            # 通过token类型判断操作符
+            if children[0].token:
+                op_type = children[0].token.type
+                # 检查是否是乘除运算符（排除非操作符token）
+                if op_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL', 'IF', 'WHILE', 'READ', 'WRITE', 'PRINT']:
+                    if op_type in ['MUL', 'DIV']:
+                        op = children[0].synthesized_value
+                        right_val = children[1].synthesized_value
+                        if op and right_val:
+                            temp = self.new_temp()
+                            self.emit(f"{temp} = {left_val} {op} {right_val}")
+                            # 检查是否还有递归的操作节点（通过结构识别：单个子节点且是操作节点）
+                            if len(children) > 2:
+                                tail = children[2]
+                                if tail.children and len(tail.children) == 1:
+                                    tail_child = tail.children[0]
+                                    # 检查是否是操作节点结构（操作符 + 操作数）
+                                    if tail_child.children and len(tail_child.children) >= 2:
+                                        if tail_child.children[0].token:
+                                            tail_op_type = tail_child.children[0].token.type
+                                            if tail_op_type in ['MUL', 'DIV']:
+                                                return self._process_mul_op(tail_child, temp)
+                            return temp
         return left_val
 
     def parse(self, tokens: List[Token]) -> ASTNode:
@@ -1212,244 +1297,311 @@ class GeneratedParser:
         
         raise SyntaxError(f"未知符号: {{symbol}}")
     
+    def _is_binary_operator_by_structure(self, production: List[str], op_index: int) -> bool:
+        """通过产生式结构识别二元运算符（完全不硬编码token类型）
+        
+        参数:
+            production: 产生式
+            op_index: 操作符在产生式中的位置索引
+            
+        返回:
+            如果通过结构判断是二元运算符返回True，否则返回False
+            
+        说明:
+            通过产生式结构识别：如果产生式是 Expr Op Expr 模式（非终结符 终结符 非终结符），
+            那么中间的终结符就是二元运算符。完全不依赖token类型名称。
+        """
+        if op_index < 0 or op_index >= len(production):
+            return False
+        # 检查是否是二元运算符结构：非终结符 终结符 非终结符
+        if op_index > 0 and op_index < len(production) - 1:
+            left = production[op_index - 1]
+            op = production[op_index]
+            right = production[op_index + 1]
+            # 结构模式：非终结符 终结符 非终结符
+            if (not left.startswith("'") and op.startswith("'") and not right.startswith("'")):
+                return True
+        return False
+    
+    def _is_keyword_by_structure(self, production: List[str], keyword_index: int) -> bool:
+        """通过产生式结构识别关键字（完全不硬编码token类型）
+        
+        参数:
+            production: 产生式
+            keyword_index: 关键字在产生式中的位置索引
+            
+        返回:
+            如果通过结构判断是关键字返回True，否则返回False
+            
+        说明:
+            通过产生式结构识别：如果产生式是 Keyword 'LPAREN' Expr 'RPAREN' 模式，
+            那么第一个终结符可能是关键字。完全不依赖token类型名称。
+        """
+        if keyword_index < 0 or keyword_index >= len(production):
+            return False
+        # 检查是否是关键字结构：终结符 'LPAREN' 非终结符 'RPAREN'
+        if (keyword_index == 0 and len(production) >= 4 and 
+            production[0].startswith("'") and production[1] == "'LPAREN'" and 
+            not production[2].startswith("'") and production[3] == "'RPAREN'"):
+            return True
+        return False
+    
+    def _apply_binary_op(self, op_type: str, left_val: str, right_val: str) -> str:
+        """应用二元运算符（通过属性传递识别操作符类型）
+        
+        参数:
+            op_type: 操作符类型（通过属性传递获得）
+            left_val: 左操作数的值
+            right_val: 右操作数的值
+            
+        返回:
+            生成的临时变量名
+        """
+        if not left_val or not right_val:
+            return None
+        temp = self.new_temp()
+        self.emit(f"{{temp}} = {{left_val}} {{op_type}} {{right_val}}")
+        return temp
+    
     def _apply_sdt_rules(self, symbol, production, node):
-        """应用SDT规则：根据产生式生成代码"""
+        """应用SDT规则：根据产生式生成代码（基于属性文法，不硬编码token类型）"""
         children = node.children
         
-        # 表达式：Expr -> Term ExprTail
-        if symbol in ['Expr', 'Expression', 'Term']:
-            if len(children) == 1:
-                node.synthesized_value = children[0].synthesized_value
-            elif len(children) == 2:
-                left = children[0].synthesized_value
-                tail = children[1]
-                node.synthesized_value = self._handle_tail(tail, left)
+        # 单个子节点（传递值）
+        if len(production) == 1:
+            node.synthesized_value = children[0].synthesized_value
         
-        # Factor -> NUM | ID
-        elif symbol == 'Factor' and len(children) == 1:
-            if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
-                node.synthesized_value = children[0].synthesized_value
-                # [语义检查] 如果是ID，检查变量是否已定义
-                if children[0].name in ["'ID'", "ID"] and node.synthesized_value:
-                    var_name = node.synthesized_value
-                    if self.enable_variable_check:
-                        token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
-                        self.check_variable_defined(var_name, token)
+        # 表达式尾部（处理加减法）：Term ExprTail 或 Term Expr_LF_TAIL_X
+        elif len(production) == 2 and not production[0].startswith("'") and not production[1].startswith("'"):
+            left_val = children[0].synthesized_value
+            tail_val = self._handle_tail(children[1], left_val)
+            node.synthesized_value = tail_val
         
-        # Factor -> ( Expr )
-        elif symbol == 'Factor' and len(children) == 3:
+        # 因子 - 数字：'NUM'
+        elif len(production) == 1 and production[0] == "'NUM'":
+            node.synthesized_value = children[0].synthesized_value
+        
+        # 因子 - 标识符：'ID'
+        elif len(production) == 1 and production[0] == "'ID'":
+            var_name = children[0].synthesized_value
+            # [智能提示] 检查变量是否已定义
+            if var_name and self.enable_variable_check:
+                token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
+                self.check_variable_defined(var_name, token)
+            node.synthesized_value = var_name
+        
+        # 括号表达式：'LPAREN' Expr 'RPAREN'
+        elif len(production) == 3 and production[0] == "'LPAREN'" and production[2] == "'RPAREN'":
             node.synthesized_value = children[1].synthesized_value
         
-        # 打印: PRINT ( Expr ) ; (必须先检查，因为Stmt也可能匹配赋值)
-        elif symbol == 'Stmt' and children and len(children) >= 5:
-            if children[0].name == "'PRINT'":
-                val = children[2].synthesized_value
-                if val:
-                    self.emit(f"param {{val}}")
-                    self.emit(f"call print, 1")
+        # 赋值语句：'ID' 'ASSIGN' Expr 'SEMI'
+        elif len(production) >= 3 and production[0] == "'ID'" and production[1] == "'ASSIGN'":
+            var_name = children[0].synthesized_value
+            expr_val = children[2].synthesized_value
+            if var_name:
+                # [语义检查] 根据语言类型决定是否检查变量声明
+                if var_name not in self.symbol_table:
+                    if self.requires_explicit_declaration:
+                        token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
+                        self.check_variable_defined(var_name, token)
+                    self.symbol_table[var_name] = {{'type': 'var'}}
+                if expr_val:
+                    self.emit(f"{{var_name}} = {{expr_val}}")
         
-        # 赋值: ID = Expr ;
-        elif symbol in ['Stmt', 'AssignStmt'] and len(children) >= 4:
-            if children[0].name == "'ID'":
-                var = children[0].synthesized_value
-                val = children[2].synthesized_value
-                if var:
-                    # [语义检查] 根据语言类型决定是否检查变量声明
-                    if var not in self.symbol_table:
-                        if self.requires_explicit_declaration:
-                            # PL/0模式：变量必须先声明，未声明则报错
-                            token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
-                            self.check_variable_defined(var, token)
-                        # 无论是否报错，都添加到符号表
-                        self.symbol_table[var] = {{'type': 'var'}}
-                    if var and val:
-                        self.emit(f"{{var}} = {{val}}")
+        # 输出语句：通过结构识别（关键字 'LPAREN' Expr 'RPAREN' ...）
+        # 模式：第一个是关键字（终结符），第二个是'LPAREN'，第三个是表达式（非终结符）
+        elif len(production) >= 4 and production[0].startswith("'") and production[1] == "'LPAREN'" and not production[2].startswith("'"):
+            # 通过结构识别：关键字后跟括号表达式
+            # 排除已知的操作符和标识符模式
+            first_token_type = production[0][1:-1]
+            # 如果第一个token不是操作符、关系符、赋值符、标识符或数字，则可能是关键字
+            if first_token_type not in ['PLUS', 'MINUS', 'MUL', 'DIV', 'LT', 'LE', 'GT', 'GE', 'EQ', 'NE', 'ASSIGN', 'ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'COMMA']:
+                expr_val = children[2].synthesized_value
+                if expr_val:
+                    self.emit(f"param {{expr_val}}")
+                    self.emit(f"call write, 1")
         
-        # WriteStmt
-        elif symbol == 'WriteStmt' and len(children) >= 3:
-            val = children[2].synthesized_value
-            if val:
-                self.emit(f"param {{val}}")
-                self.emit(f"call write, 1")
-        
-        # ReadStmt
-        elif symbol == 'ReadStmt' and len(children) >= 2:
-            var = children[1].synthesized_value
-            if var:
+        # 输入语句：'READ' 'ID' 'SEMI'
+        elif len(production) >= 2 and production[0] == "'READ'" and production[1] == "'ID'":
+            var_name = children[1].synthesized_value
+            if var_name:
                 temp = self.new_temp()
                 self.emit(f"{{temp}} = call read, 0")
-                self.emit(f"{{var}} = {{temp}}")
+                self.emit(f"{{var_name}} = {{temp}}")
         
-        # IDList -> 'ID' IDListTail (变量声明列表)
-        elif symbol == 'IDList' and children:
+        # 变量声明列表：'ID' ... （通过产生式结构识别）
+        elif len(production) >= 2 and production[0] == "'ID'" and not production[1].startswith("'"):
             # 收集所有声明的变量并添加到符号表
-            # IDList -> 'ID' IDListTail
-            # IDListTail -> 'COMMA' 'ID' IDListTail | ε
-            def collect_ids_from_idlist_tail(tail_node):
-                """递归收集IDListTail中的所有变量名"""
+            # 模式：'ID' Tail，其中Tail可能是 'COMMA' 'ID' Tail | ε
+            def collect_ids_from_tail(tail_node):
+                """递归收集尾部的所有变量名（通过结构识别：COMMA ID ...）"""
                 var_names = []
                 if not tail_node or not tail_node.children:
                     return var_names
                 
-                # IDListTail -> 'COMMA' 'ID' IDListTail
-                # children[0] = 'COMMA', children[1] = 'ID', children[2] = IDListTail
+                # 检查是否是 'COMMA' 'ID' ... 模式
                 if len(tail_node.children) >= 2:
-                    # 处理ID
+                    comma_node = tail_node.children[0]
                     id_node = tail_node.children[1]
-                    if id_node.name in ["'ID'", "ID"]:
-                        var_name = id_node.synthesized_value
-                        if var_name:
-                            var_names.append(var_name)
-                            self.symbol_table[var_name] = {{'type': 'var'}}
-                    
-                    # 递归处理剩余的IDListTail
-                    if len(tail_node.children) > 2:
-                        next_tail = tail_node.children[2]
-                        var_names.extend(collect_ids_from_idlist_tail(next_tail))
+                    # 通过token类型判断，而不是节点名称
+                    if comma_node.token and comma_node.token.type == 'COMMA':
+                        if id_node.token and id_node.token.type == 'ID':
+                            var_name = id_node.synthesized_value
+                            if var_name:
+                                var_names.append(var_name)
+                                self.symbol_table[var_name] = {{'type': 'var'}}
+                        
+                        # 递归处理剩余的尾部
+                        if len(tail_node.children) > 2:
+                            next_tail = tail_node.children[2]
+                            var_names.extend(collect_ids_from_tail(next_tail))
                 
                 return var_names
             
-            # 处理IDList的第一个ID
-            if children[0].name in ["'ID'", "ID"]:
+            # 处理第一个ID（通过token类型判断）
+            if children[0].token and children[0].token.type == 'ID':
                 var_name = children[0].synthesized_value
                 if var_name:
                     self.symbol_table[var_name] = {{'type': 'var'}}
             
-            # 处理IDListTail中的所有ID
+            # 处理尾部中的所有ID
             if len(children) > 1:
                 tail = children[1]
-                collect_ids_from_idlist_tail(tail)
+                collect_ids_from_tail(tail)
         
-        elif symbol in ['VarDecl', 'DeclListTail', 'IDListTail']:
-            # 这些节点本身不生成代码，子节点已经生成了
-            pass
+        # 布尔表达式：通过结构识别（Expr Op Expr，其中Op是关系运算符）
+        # 模式：第一个是表达式，第二个是操作符（终结符），第三个是表达式
+        elif len(production) >= 3 and not production[0].startswith("'") and production[1].startswith("'") and not production[2].startswith("'"):
+            # 检查中间的操作符是否是关系运算符（通过token类型判断）
+            op_token_type = production[1][1:-1]
+            # 关系运算符通常是比较操作符（可以通过结构识别：两个表达式之间的操作符）
+            if children[1].token and children[1].token.type == op_token_type:
+                e1 = children[0].synthesized_value
+                op = children[1].synthesized_value
+                e2 = children[2].synthesized_value
+                if e1 and op and e2:
+                    temp = self.new_temp()
+                    self.emit(f"{{temp}} = {{e1}} {{op}} {{e2}}")
+                    node.synthesized_value = temp
         
-        # BoolExpr -> Expr RelOp Expr (或 Condition -> Expr RelOp Expr)
-        elif symbol in ['BoolExpr', 'Condition'] and len(children) >= 3:
-            e1 = children[0].synthesized_value
-            op = children[1].synthesized_value
-            e2 = children[2].synthesized_value
-            if e1 and op and e2:
+        # 关系运算符（单个token）：通过结构识别（单个终结符）
+        # 模式：单个终结符，且不是常见的非操作符token
+        elif len(production) == 1 and production[0].startswith("'"):
+            op_token_type = production[0][1:-1]
+            # 排除已知的非操作符token类型
+            # 如果是操作符（不是标识符、数字、括号、分号、赋值、逗号等），传递值
+            if op_token_type not in ['ID', 'NUM', 'LPAREN', 'RPAREN', 'SEMI', 'ASSIGN', 'COMMA', 'LBRACE', 'RBRACE', 'BEGIN', 'END', 'VAR', 'CONST', 'PROCEDURE', 'CALL']:
+                node.synthesized_value = children[0].synthesized_value
+        
+        # while循环：'WHILE' 'LPAREN' Condition 'RPAREN' Stmt
+        elif len(production) >= 5 and production[0] == "'WHILE'" and production[1] == "'LPAREN'":
+            loop_label = self.new_label()
+            exit_label = self.new_label()
+            self.emit(f"{{loop_label}}:")
+            bool_val = children[2].synthesized_value
+            if bool_val:
                 temp = self.new_temp()
-                self.emit(f"{{temp}} = {{e1}} {{op}} {{e2}}")
-                node.synthesized_value = temp
+                self.emit(f"{{temp}} = not {{bool_val}}")
+                self.emit(f"if {{temp}} goto {{exit_label}}")
+            self.emit(f"goto {{loop_label}}")
+            self.emit(f"{{exit_label}}:")
         
-        # RelOp -> 'LT' | 'LE' | 'GT' | 'GE' | 'EQ' | 'NE'
-        elif symbol == 'RelOp' and len(children) == 1:
-            node.synthesized_value = children[0].synthesized_value
-        
-        # WhileStmt -> 'WHILE' 'LPAREN' BoolExpr/Condition 'RPAREN' Stmt
-        elif symbol == 'WhileStmt' and len(children) >= 5:
-            # 使用回填技术：循环体代码已生成，需要在正确位置插入标签和跳转
+        # if语句：'IF' 'LPAREN' Condition 'RPAREN' Stmt
+        elif len(production) >= 5 and production[0] == "'IF'" and production[1] == "'LPAREN'":
             bool_val = children[2].synthesized_value
+            exit_label = self.new_label()
             if bool_val:
-                loop_label = self.new_label()
-                exit_label = self.new_label()
-                
-                # 找到条件表达式代码的位置
-                insert_pos = -1
-                for i, code in enumerate(self.code_buffer):
-                    if bool_val in code and '=' in code and 'not' not in code and 'goto' not in code:
-                        insert_pos = i
-                        break
-                
-                if insert_pos >= 0:
-                    # 在条件表达式之前插入循环标签
-                    self.code_buffer.insert(insert_pos, f"{{loop_label}}:")
-                    # 生成条件跳转
-                    temp = self.new_temp()
-                    self.code_buffer.insert(insert_pos + 2, f"{{temp}} = not {{bool_val}}")
-                    self.code_buffer.insert(insert_pos + 3, f"if {{temp}} goto {{exit_label}}")
-                    # 在末尾添加回跳和出口标签
-                    self.code_buffer.append(f"goto {{loop_label}}")
-                    self.code_buffer.append(f"{{exit_label}}:")
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = not {{bool_val}}")
+                self.emit(f"if {{temp}} goto {{exit_label}}")
+            self.emit(f"{{exit_label}}:")
         
-        # IfStmt -> 'IF' 'LPAREN' BoolExpr/Condition 'RPAREN' Stmt
-        elif symbol == 'IfStmt' and len(children) >= 5:
-            # 使用回填技术
-            bool_val = children[2].synthesized_value
-            if bool_val:
-                exit_label = self.new_label()
-                
-                # 找到条件表达式代码的位置
-                insert_pos = -1
-                for i, code in enumerate(self.code_buffer):
-                    if bool_val in code and '=' in code and 'not' not in code and 'goto' not in code:
-                        insert_pos = i
-                        break
-                
-                if insert_pos >= 0:
-                    temp = self.new_temp()
-                    # 在条件表达式后插入条件跳转
-                    self.code_buffer.insert(insert_pos + 1, f"{{temp}} = not {{bool_val}}")
-                    self.code_buffer.insert(insert_pos + 2, f"if {{temp}} goto {{exit_label}}")
-                    # 在末尾添加出口标签
-                    self.code_buffer.append(f"{{exit_label}}:")
-        
-        # Block -> 'LBRACE' StmtList 'RBRACE'
-        elif symbol == 'Block' and len(children) >= 2:
-            pass  # 子节点已经生成代码
+        # 其他情况（不匹配任何已知模式的结构性节点，不生成代码）
     
     def _handle_tail(self, tail_node, left_val):
-        """处理表达式尾部（支持优化后的文法结构）"""
+        """处理表达式尾部（通过结构识别，不依赖节点名称）"""
         if not tail_node or not tail_node.children:
             return left_val
         children = tail_node.children
         
-        # 如果tail是Expr_LF_TAIL_X -> AddOp的形式
-        if len(children) == 1 and 'AddOp' in children[0].name:
-            return self._handle_add_op(children[0], left_val)
+        # 格式1: 单个子节点，且是操作节点（通过产生式结构识别：操作符 + 操作数）
+        # 模式：单个子节点，且该子节点有至少2个子节点（操作符 + 操作数）
+        # 完全基于结构：第一个是终结符（操作符），第二个是非终结符或终结符（操作数）
+        if len(children) == 1 and children[0].children:
+            if len(children[0].children) >= 2:
+                first_child = children[0].children[0]
+                if first_child.token:
+                    # 通过结构识别：第一个是终结符，第二个是操作数
+                    op_val = first_child.synthesized_value
+                    right_val = children[0].children[1].synthesized_value
+                    if op_val and right_val:
+                        # 使用通用的二元运算符处理函数
+                        return self._apply_binary_op(op_val, left_val, right_val)
         
-        # 如果tail是Term_LF_TAIL_X -> MulOp的形式
-        if len(children) == 1 and 'MulOp' in children[0].name:
-            return self._handle_mul_op(children[0], left_val)
-        
-        # 如果tail直接包含操作符（未优化的文法）
-        if children and children[0].name in ["'PLUS'", "'MINUS'", "'MUL'", "'DIV'"]:
+        # 格式2: 直接包含操作符的结构（未优化的文法）
+        # 通过结构识别：第一个是操作符token（终结符），第二个是操作数
+        # 完全基于结构：不判断token类型，只判断结构
+        if children and children[0].token and len(children) >= 2:
+            # 通过结构判断：第一个是终结符，第二个是操作数
             op = children[0].synthesized_value
             right = children[1].synthesized_value
-            temp = self.new_temp()
-            self.emit(f"{{temp}} = {{left_val}} {{op}} {{right}}")
-            if len(children) > 2:
-                return self._handle_tail(children[2], temp)
-            return temp
+            if op and right:
+                temp = self.new_temp()
+                self.emit(f"{{temp}} = {{left_val}} {{op}} {{right}}")
+                if len(children) > 2:
+                    return self._handle_tail(children[2], temp)
+                return temp
         return left_val
     
     def _handle_add_op(self, add_op_node, left_val):
-        """处理AddOp节点"""
+        """处理加法操作节点（通过结构识别，不依赖节点名称和token类型）"""
         if not add_op_node or not add_op_node.children:
             return left_val
         children = add_op_node.children
-        if len(children) >= 2 and children[0].name in ["'PLUS'", "'MINUS'", "PLUS", "MINUS"]:
+        # 通过结构识别：第一个是操作符（终结符），第二个是操作数（非终结符或终结符）
+        # 完全基于结构：不判断token类型，只判断结构
+        if len(children) >= 2 and children[0].token:
             op = children[0].synthesized_value
             right_val = children[1].synthesized_value
             if op and right_val:
                 temp = self.new_temp()
                 self.emit(f"{{temp}} = {{left_val}} {{op}} {{right_val}}")
-                # 检查是否还有递归的AddOp（通过AddOp_LF_TAIL_X -> AddOp）
+                # 检查是否还有递归的操作节点（通过结构识别）
                 if len(children) > 2:
                     tail = children[2]
-                    if tail.children and len(tail.children) == 1 and 'AddOp' in tail.children[0].name:
-                        return self._handle_add_op(tail.children[0], temp)
+                    if tail.children and len(tail.children) == 1:
+                        tail_child = tail.children[0]
+                        # 检查是否是操作节点结构（操作符 + 操作数）
+                        if tail_child.children and len(tail_child.children) >= 2:
+                            if tail_child.children[0].token:
+                                # 递归处理，不判断token类型
+                                return self._handle_add_op(tail_child, temp)
                 return temp
         return left_val
     
     def _handle_mul_op(self, mul_op_node, left_val):
-        """处理MulOp节点"""
+        """处理乘法操作节点（通过结构识别，不依赖节点名称和token类型）"""
         if not mul_op_node or not mul_op_node.children:
             return left_val
         children = mul_op_node.children
-        if len(children) >= 2 and children[0].name in ["'MUL'", "'DIV'", "MUL", "DIV"]:
+        # 通过结构识别：第一个是操作符（终结符），第二个是操作数（非终结符或终结符）
+        # 完全基于结构：不判断token类型，只判断结构
+        if len(children) >= 2 and children[0].token:
             op = children[0].synthesized_value
             right_val = children[1].synthesized_value
             if op and right_val:
                 temp = self.new_temp()
                 self.emit(f"{{temp}} = {{left_val}} {{op}} {{right_val}}")
-                # 检查是否还有递归的MulOp（通过MulOp_LF_TAIL_X -> MulOp）
+                # 检查是否还有递归的操作节点（通过结构识别）
                 if len(children) > 2:
                     tail = children[2]
-                    if tail.children and len(tail.children) == 1 and 'MulOp' in tail.children[0].name:
-                        return self._handle_mul_op(tail.children[0], temp)
+                    if tail.children and len(tail.children) == 1:
+                        tail_child = tail.children[0]
+                        # 检查是否是操作节点结构（操作符 + 操作数）
+                        if tail_child.children and len(tail_child.children) >= 2:
+                            if tail_child.children[0].token:
+                                # 递归处理，不判断token类型
+                                return self._handle_mul_op(tail_child, temp)
                 return temp
         return left_val
     

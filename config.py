@@ -9,7 +9,9 @@ Configuration File - 配置文件
 DEFAULT_COMPILER = "generated/compiler.py"
 
 # 默认源文件夹路径
-DEFAULT_SOURCE_DIR = "examples/error_test/pl0"
+DEFAULT_SOURCE_DIR = "examples/pl0_subset/programs"
+#examples/pl0_subset/programs
+#examples/error_test/pl0
 
 # 默认输出文件夹路径
 DEFAULT_OUTPUT_DIR = "test_outputs"
