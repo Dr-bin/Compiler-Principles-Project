@@ -70,6 +70,7 @@ class ParserGenerator:
         self.terminals: Set[str] = set()
         self.first_sets: Dict[str, Set[str]] = {}
         self.follow_sets: Dict[str, Set[str]] = {}
+        self.select_sets: Dict[str, List[Set[str]]] = {}  # 存储每个非终结符的产生式SELECT集合
         self.epsilon_symbol: str = 'EPSILON'
         self.analysis_sets_built = False
         
@@ -361,6 +362,15 @@ class ParserGenerator:
         self.grammar = new_grammar
         self._identify_symbols()
 
+    def _precompute_select_sets(self):
+        """预计算所有产生式的SELECT集合，用于高效解析"""
+        self.select_sets = {}
+        for non_terminal in self.non_terminals:
+            self.select_sets[non_terminal] = []
+            for production in self.grammar[non_terminal]:
+                select_set = self._compute_select_set(non_terminal, production)
+                self.select_sets[non_terminal].append(select_set)
+
     def _compute_select_set(self, non_terminal: str, production: List[str]) -> Set[str]:
         first_alpha = self._get_first_set_for_sequence(production)
         if self.epsilon_symbol not in first_alpha:
@@ -375,24 +385,17 @@ class ParserGenerator:
             productions = self.grammar.get(A, [])
             if len(productions) <= 1: continue
 
-            select_sets_info = []
-            for production in productions:
-                select_sets_info.append({
-                    'production': production,
-                    'select': self._compute_select_set(A, production)
-                })
+            select_sets = self.select_sets[A]
 
-            for i in range(len(select_sets_info)):
-                for j in range(i + 1, len(select_sets_info)):
-                    set_i = select_sets_info[i]['select']
-                    set_j = select_sets_info[j]['select']
+            for i in range(len(select_sets)):
+                for j in range(i + 1, len(select_sets)):
+                    set_i = select_sets[i]
+                    set_j = select_sets[j]
                     intersection = set_i.intersection(set_j)
 
                     if intersection:
-                        prod_i_str = " ".join(select_sets_info[i]['production']) if select_sets_info[i][
-                            'production'] else self.epsilon_symbol
-                        prod_j_str = " ".join(select_sets_info[j]['production']) if select_sets_info[j][
-                            'production'] else self.epsilon_symbol
+                        prod_i_str = " ".join(productions[i]) if productions[i] else self.epsilon_symbol
+                        prod_j_str = " ".join(productions[j]) if productions[j] else self.epsilon_symbol
                         raise ParseError(
                             f"LL(1) Conflict detected for non-terminal '{A}'.\n"
                             f"Productions:\n  1. {A} -> {prod_i_str}\n  2. {A} -> {prod_j_str}\n"
@@ -406,6 +409,7 @@ class ParserGenerator:
         self._perform_left_factoring()
         self._compute_first_sets()  # 修复了 UnboundLocalError
         self._compute_follow_sets()  # 修正了 FOLLOW 集合的计算
+        self._precompute_select_sets()  # 预计算所有产生式的SELECT集合
         self._check_ll1_conflicts()
         self.analysis_sets_built = True
 
@@ -548,17 +552,15 @@ class ParserGenerator:
 
         current_token_type = self.current_token().type
         productions = self.grammar[symbol]
+        select_sets_for_symbol = self.select_sets[symbol]
         found_production = None
+        found_index = -1
 
-        for production in productions:
-            production_first_set = self._get_first_set_for_sequence(production)
-            if current_token_type in production_first_set:
-                found_production = production
+        for i, select_set in enumerate(select_sets_for_symbol):
+            if current_token_type in select_set:
+                found_production = productions[i]
+                found_index = i
                 break
-            if self.epsilon_symbol in production_first_set:
-                if current_token_type in self.follow_sets.get(symbol, set()):
-                    found_production = production
-                    break
 
         if found_production is not None:
             children_nodes = []
