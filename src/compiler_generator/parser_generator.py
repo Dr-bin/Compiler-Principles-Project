@@ -500,11 +500,11 @@ class ParserGenerator:
         defined_vars = set(self.symbol_table.keys())
         suggestion = suggest_variable_fix(var_name, defined_vars)
         
-        error_msg = f"Semantic error at line {line}, column {column} - variable '{var_name}' is not defined"
+        error_msg = f"语义错误：第 {line} 行，第 {column} 列 - 变量 '{var_name}' 未定义"
         if suggestion:
-            error_msg += f"\n  [Suggestion] Did you mean '{suggestion}'?"
+            error_msg += f"\n  [建议] 您是否想使用 '{suggestion}'？"
         elif defined_vars:
-            error_msg += f"\n  [Hint] Defined variables: {', '.join(sorted(defined_vars))}"
+            error_msg += f"\n  [提示] 已定义的变量：{', '.join(sorted(defined_vars))}"
         
         self.semantic_errors.append(error_msg)
         return False
@@ -1112,9 +1112,9 @@ class GeneratedParser:
         if token.type == token_type:
             return self.advance()
         raise SyntaxError(
-            f"Syntax error at line {{token.line}}, column {{token.column}}\\n"
-            f"  Expected: {{token_type}}\\n"
-            f"  Got: {{token.type}} (value: '{{token.value}}')"
+            f"语法错误：第 {{token.line}} 行，第 {{token.column}} 列\\n"
+            f"  期望：{{token_type}}\\n"
+            f"  实际：{{token.type}} (值: '{{token.value}}')"
         )
     
     def _is_terminal(self, symbol: str) -> bool:
@@ -1197,12 +1197,12 @@ class GeneratedParser:
             if self.epsilon_symbol in self.first_sets.get(symbol, set()):
                 expected_tokens.extend(list(self.follow_sets.get(symbol, set())))
             
-            expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "unknown"
+            expected_str = ", ".join(set(expected_tokens)) if expected_tokens else "未知"
             raise SyntaxError(
-                f"Syntax error at line {{current.line}}, column {{current.column}}\\n"
-                f"  Cannot parse non-terminal '{{symbol}}'\\n"
-                f"  Current token: {{current.type}} (value: '{{current.value}}')\\n"
-                f"  Expected token types: {{expected_str}}"
+                f"语法错误：第 {{current.line}} 行，第 {{current.column}} 列\\n"
+                f"  无法解析非终结符 '{{symbol}}'\\n"
+                f"  当前符号：{{current.type}} (值: '{{current.value}}')\\n"
+                f"  期望的符号类型：{{expected_str}}"
             )
         
         # 直接匹配token类型
@@ -1279,6 +1279,50 @@ class GeneratedParser:
                 temp = self.new_temp()
                 self.emit(f"{{temp}} = call read, 0")
                 self.emit(f"{{var}} = {{temp}}")
+        
+        # IDList -> 'ID' IDListTail (变量声明列表)
+        elif symbol == 'IDList' and children:
+            # 收集所有声明的变量并添加到符号表
+            # IDList -> 'ID' IDListTail
+            # IDListTail -> 'COMMA' 'ID' IDListTail | ε
+            def collect_ids_from_idlist_tail(tail_node):
+                """递归收集IDListTail中的所有变量名"""
+                var_names = []
+                if not tail_node or not tail_node.children:
+                    return var_names
+                
+                # IDListTail -> 'COMMA' 'ID' IDListTail
+                # children[0] = 'COMMA', children[1] = 'ID', children[2] = IDListTail
+                if len(tail_node.children) >= 2:
+                    # 处理ID
+                    id_node = tail_node.children[1]
+                    if id_node.name in ["'ID'", "ID"]:
+                        var_name = id_node.synthesized_value
+                        if var_name:
+                            var_names.append(var_name)
+                            self.symbol_table[var_name] = {{'type': 'var'}}
+                    
+                    # 递归处理剩余的IDListTail
+                    if len(tail_node.children) > 2:
+                        next_tail = tail_node.children[2]
+                        var_names.extend(collect_ids_from_idlist_tail(next_tail))
+                
+                return var_names
+            
+            # 处理IDList的第一个ID
+            if children[0].name in ["'ID'", "ID"]:
+                var_name = children[0].synthesized_value
+                if var_name:
+                    self.symbol_table[var_name] = {{'type': 'var'}}
+            
+            # 处理IDListTail中的所有ID
+            if len(children) > 1:
+                tail = children[1]
+                collect_ids_from_idlist_tail(tail)
+        
+        elif symbol in ['VarDecl', 'DeclListTail', 'IDListTail']:
+            # 这些节点本身不生成代码，子节点已经生成了
+            pass
     
     def _handle_tail(self, tail_node, left_val):
         """处理表达式尾部（支持优化后的文法结构）"""
@@ -1369,11 +1413,11 @@ class GeneratedParser:
                         suggestion = defined_var
                         break
         
-        error_msg = f"Semantic error at line {{line}}, column {{column}} - variable '{{var_name}}' is not defined"
+        error_msg = f"语义错误：第 {{line}} 行，第 {{column}} 列 - 变量 '{{var_name}}' 未定义"
         if suggestion:
-            error_msg += f"\\n  [Suggestion] Did you mean '{{suggestion}}'?"
+            error_msg += f"\\n  [建议] 您是否想使用 '{{suggestion}}'？"
         elif defined_vars:
-            error_msg += f"\\n  [Hint] Defined variables: {{', '.join(sorted(defined_vars))}}"
+            error_msg += f"\\n  [提示] 已定义的变量：{{', '.join(sorted(defined_vars))}}"
         
         self.semantic_errors.append(error_msg)
         return False
@@ -1401,9 +1445,9 @@ class GeneratedParser:
         current = self.current_token()
         if current.type != 'EOF':
             raise SyntaxError(
-                f"Syntax error at line {{current.line}}, column {{current.column}}\\n"
-                f"  Parsing incomplete, unprocessed token remaining\\n"
-                f"  Remaining token: {{current.type}} (value: '{{current.value}}')"
+                f"语法错误：第 {{current.line}} 行，第 {{current.column}} 列\\n"
+                f"  解析不完整，仍有未处理的符号\\n"
+                f"  剩余符号：{{current.type}} (值: '{{current.value}}')"
             )
         return ast
 '''

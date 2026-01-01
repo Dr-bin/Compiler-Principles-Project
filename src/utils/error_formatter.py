@@ -51,13 +51,13 @@ class ErrorFormatter:
         
         # 1. Error header
         result.append("=" * 70)
-        result.append("[ERROR] Syntax Error")
+        result.append("[错误] 语法错误")
         result.append("=" * 70)
         result.append("")
         
         # 2. Location information
-        location = f"File: {self.source_file}" if self.source_file else "Source code"
-        result.append(f"[Location] {location}, Line {line}, Column {column}")
+        location = f"文件: {self.source_file}" if self.source_file else "源代码"
+        result.append(f"[位置] {location}, 第 {line} 行, 第 {column} 列")
         result.append("")
         
         # 3. Display source code snippet (2 lines before and after)
@@ -65,7 +65,7 @@ class ErrorFormatter:
         start_line = max(1, line - context_lines)
         end_line = min(len(self.source_lines), line + context_lines)
         
-        result.append("[Source Code Snippet]:")
+        result.append("[源代码片段]:")
         result.append("-" * 70)
         
         for i in range(start_line, end_line + 1):
@@ -85,29 +85,29 @@ class ErrorFormatter:
         result.append("")
         
         # 4. Error details
-        result.append("[Error Details]:")
+        result.append("[错误详情]:")
         result.append(f"   {error_message}")
         result.append("")
         
         # 5. Expected tokens (if any)
         if expected_tokens:
-            result.append("[Expected Token Types]:")
+            result.append("[期望的符号类型]:")
             if len(expected_tokens) <= 5:
                 result.append(f"   {', '.join(expected_tokens)}")
             else:
-                result.append(f"   {', '.join(expected_tokens[:5])} ... (total {len(expected_tokens)} types)")
+                result.append(f"   {', '.join(expected_tokens[:5])} ... (共 {len(expected_tokens)} 种类型)")
             result.append("")
         
         # 6. Suggestions
-        result.append("[Suggestions]:")
+        result.append("[建议]:")
         if expected_tokens:
             # Try to provide friendly suggestions
             suggestions = self._generate_suggestions(expected_tokens, line, column)
             for suggestion in suggestions:
                 result.append(f"   - {suggestion}")
         else:
-            result.append("   - Please check if the grammar rules are correct")
-            result.append("   - Make sure no necessary symbols are missing (e.g., semicolon, parentheses)")
+            result.append("   - 请检查语法规则是否正确")
+            result.append("   - 确保没有缺少必要的符号（如分号、括号等）")
         result.append("")
         
         result.append("=" * 70)
@@ -128,12 +128,12 @@ class ErrorFormatter:
         result = []
         
         result.append("=" * 70)
-        result.append("[ERROR] Lexical Error")
+        result.append("[错误] 词法错误")
         result.append("=" * 70)
         result.append("")
         
-        location = f"File: {self.source_file}" if self.source_file else "Source code"
-        result.append(f"[Location] {location}, Line {line}, Column {column}")
+        location = f"文件: {self.source_file}" if self.source_file else "源代码"
+        result.append(f"[位置] {location}, 第 {line} 行, 第 {column} 列")
         result.append("")
         
         # Display source code snippet
@@ -141,7 +141,7 @@ class ErrorFormatter:
         start_line = max(1, line - context_lines)
         end_line = min(len(self.source_lines), line + context_lines)
         
-        result.append("[Source Code Snippet]:")
+        result.append("[源代码片段]:")
         result.append("-" * 70)
         
         for i in range(start_line, end_line + 1):
@@ -157,7 +157,7 @@ class ErrorFormatter:
         
         result.append("-" * 70)
         result.append("")
-        result.append(f"[Error Details] {error_message}")
+        result.append(f"[错误详情] {error_message}")
         result.append("")
         result.append("=" * 70)
         
@@ -184,16 +184,16 @@ class ErrorFormatter:
         
         # Provide suggestions based on token types
         token_suggestions = {
-            'SEMI': 'Missing semicolon (;)',
-            'RPAREN': 'Missing right parenthesis ())',
-            'LPAREN': 'Missing left parenthesis (()',
-            'NUM': 'A number is expected here',
-            'ID': 'An identifier (variable name) is expected here',
-            'PLUS': 'Missing plus operator (+)',
-            'MINUS': 'Missing minus operator (-)',
-            'MUL': 'Missing multiplication operator (*)',
-            'DIV': 'Missing division operator (/)',
-            'ASSIGN': 'Missing assignment operator (=)',
+            'SEMI': '缺少分号 (;)',
+            'RPAREN': '缺少右括号 ())',
+            'LPAREN': '缺少左括号 (()',
+            'NUM': '此处需要一个数字',
+            'ID': '此处需要一个标识符（变量名）',
+            'PLUS': '缺少加号 (+)',
+            'MINUS': '缺少减号 (-)',
+            'MUL': '缺少乘号 (*)',
+            'DIV': '缺少除号 (/)',
+            'ASSIGN': '缺少赋值运算符 (=)',
         }
         
         for token in expected_tokens[:3]:  # Show only first 3 suggestions
@@ -202,7 +202,7 @@ class ErrorFormatter:
         
         # If no specific suggestions, provide general suggestion
         if not suggestions:
-            suggestions.append(f"Expected one of: {', '.join(expected_tokens[:3])}")
+            suggestions.append(f"期望以下符号之一：{', '.join(expected_tokens[:3])}")
         
         return suggestions
     
@@ -218,10 +218,10 @@ class ErrorFormatter:
         """
         result = []
         result.append("=" * 70)
-        result.append(f"[ERROR] {error_type}")
+        result.append(f"[错误] {error_type}")
         result.append("=" * 70)
         result.append("")
-        result.append(f"[Error Details] {error_message}")
+        result.append(f"[错误详情] {error_message}")
         result.append("")
         result.append("=" * 70)
         return "\n".join(result)

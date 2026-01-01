@@ -211,7 +211,7 @@ class CompilerCLI:
 
             # 核心修复：传入 grammar_rules 字典而不是 parser_code 字符串，并传入 start_symbol
             # 现在的 code_generator 会在内部调用 pg.build_analysis_sets() 来消除冲突
-            compiler_code = generate_compiler_code(lexer_code, grammar_rules, start_symbol)
+            compiler_code = generate_compiler_code(lexer_code, grammar_rules, start_symbol, metadata=metadata)
             
             # 写入文件
             os.makedirs(os.path.dirname(args.output) or '.', exist_ok=True)

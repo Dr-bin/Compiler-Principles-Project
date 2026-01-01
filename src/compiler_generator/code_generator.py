@@ -217,16 +217,16 @@ class ErrorFormatter:
                            expected_tokens: List[str] = None) -> str:
         result = []
         result.append("=" * 70)
-        result.append("[ERROR] Syntax Error")
+        result.append("[错误] 语法错误")
         result.append("=" * 70)
         result.append("")
-        location = f"File: {{self.source_file}}" if self.source_file else "Source code"
-        result.append(f"[Location] {{location}}, Line {{line}}, Column {{column}}")
+        location = f"文件: {{self.source_file}}" if self.source_file else "源代码"
+        result.append(f"[位置] {{location}}, 第 {{line}} 行, 第 {{column}} 列")
         result.append("")
         context_lines = 2
         start_line = max(1, line - context_lines)
         end_line = min(len(self.source_lines), line + context_lines)
-        result.append("[Source Code Snippet]:")
+        result.append("[源代码片段]:")
         result.append("-" * 70)
         for i in range(start_line, end_line + 1):
             line_num = str(i).rjust(4)
@@ -239,30 +239,30 @@ class ErrorFormatter:
                 result.append(f"    {{line_num}} | {{line_content}}")
         result.append("-" * 70)
         result.append("")
-        result.append("[Error Details]:")
+        result.append("[错误详情]:")
         result.append(f"   {{error_message}}")
         result.append("")
         if expected_tokens:
-            result.append("[Expected Token Types]:")
+            result.append("[期望的符号类型]:")
             if len(expected_tokens) <= 5:
                 result.append(f"   {{', '.join(expected_tokens)}}")
             else:
-                result.append(f"   {{', '.join(expected_tokens[:5])}} ... (total {{len(expected_tokens)}} types)")
+                result.append(f"   {{', '.join(expected_tokens[:5])}} ... (共 {{len(expected_tokens)}} 种类型)")
             result.append("")
-        result.append("[Suggestions]:")
+        result.append("[建议]:")
         if expected_tokens:
             token_suggestions = {{
-                'SEMI': 'Missing semicolon (;)',
-                'RPAREN': 'Missing right parenthesis ())',
-                'LPAREN': 'Missing left parenthesis (()',
-                'NUM': 'A number is expected here',
-                'ID': 'An identifier (variable name) is expected here',
+                'SEMI': '缺少分号 (;)',
+                'RPAREN': '缺少右括号 ())',
+                'LPAREN': '缺少左括号 (()',
+                'NUM': '此处需要一个数字',
+                'ID': '此处需要一个标识符（变量名）',
             }}
             for token in expected_tokens[:3]:
                 if token in token_suggestions:
                     result.append(f"   - {{token_suggestions[token]}}")
         else:
-            result.append("   - Please check if the grammar rules are correct")
+            result.append("   - 请检查语法规则是否正确")
         result.append("")
         result.append("=" * 70)
         return "\\n".join(result)
@@ -270,16 +270,16 @@ class ErrorFormatter:
     def format_lexical_error(self, error_message: str, line: int, column: int) -> str:
         result = []
         result.append("=" * 70)
-        result.append("[ERROR] Lexical Error")
+        result.append("[错误] 词法错误")
         result.append("=" * 70)
         result.append("")
-        location = f"File: {{self.source_file}}" if self.source_file else "Source code"
-        result.append(f"[Location] {{location}}, Line {{line}}, Column {{column}}")
+        location = f"文件: {{self.source_file}}" if self.source_file else "源代码"
+        result.append(f"[位置] {{location}}, 第 {{line}} 行, 第 {{column}} 列")
         result.append("")
         context_lines = 2
         start_line = max(1, line - context_lines)
         end_line = min(len(self.source_lines), line + context_lines)
-        result.append("[Source Code Snippet]:")
+        result.append("[源代码片段]:")
         result.append("-" * 70)
         for i in range(start_line, end_line + 1):
             line_num = str(i).rjust(4)
@@ -292,7 +292,7 @@ class ErrorFormatter:
                 result.append(f"    {{line_num}} | {{line_content}}")
         result.append("-" * 70)
         result.append("")
-        result.append(f"[Error Details] {{error_message}}")
+        result.append(f"[错误详情] {{error_message}}")
         result.append("")
         result.append("=" * 70)
         return "\\n".join(result)
@@ -300,7 +300,7 @@ class ErrorFormatter:
     def format_general_error(self, error_message: str, error_type: str = "Error") -> str:
         result = []
         result.append("=" * 70)
-        result.append(f"[ERROR] {{error_type}}")
+        result.append(f"[错误] {{error_type}}")
         result.append("=" * 70)
         result.append("")
         result.append(f"[错误详情] {{error_message}}")
@@ -310,8 +310,15 @@ class ErrorFormatter:
 '''
 
 
-def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: str) -> str:
-    """生成完整的编译器代码"""
+def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: str, metadata: Dict = None) -> str:
+    """生成完整的编译器代码
+    
+    参数:
+        lexer_code: 词法分析器代码
+        grammar_rules: 语法规则字典
+        start_symbol: 开始符号
+        metadata: 语言特性元数据（可选）
+    """
 
     # --- 第一步：强制使用 ParserGenerator 优化文法并生成 Parser 代码 ---
     pg = ParserGenerator()
@@ -327,7 +334,7 @@ def generate_compiler_code(lexer_code: str, grammar_rules: Dict, start_symbol: s
     optimized_grammar = pg.grammar
     first_sets = pg.first_sets
     follow_sets = pg.follow_sets
-    parser_code = generate_parser_code(optimized_grammar, start_symbol, first_sets, follow_sets)
+    parser_code = generate_parser_code(optimized_grammar, start_symbol, first_sets, follow_sets, metadata=metadata)
 
     # --- 第二步：读取 ErrorFormatter 代码 ---
     error_formatter_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
@@ -651,6 +658,16 @@ class GeneratedCompiler:
         
         # [SDT关键] parse过程中已经同时生成了中间代码
         ast = self.parser.parse(tokens)
+        
+        # [语义检查] 检查是否有语义错误（如未定义变量）
+        if self.parser.has_semantic_errors():
+            print("\\n" + "=" * 60)
+            print("[错误] 检测到语义错误")
+            print("=" * 60)
+            for error in self.parser.get_semantic_errors():
+                print(error)
+            print("=" * 60 + "\\n")
+            raise SyntaxError("编译失败：存在语义错误")
         
         # [SDT] 直接从parser获取生成的中间代码
         code_str = self.parser.get_generated_code()
