@@ -1,0 +1,8 @@
+// 语法错误测试：多余的token
+var x, y;
+
+begin
+    x = 10;
+    y = 20;
+end
+extra_token_here

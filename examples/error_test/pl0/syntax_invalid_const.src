@@ -1,0 +1,7 @@
+// 语法错误测试：常量声明错误
+const a = 10, b =, c = 20;
+var x;
+
+begin
+    x = a;
+end

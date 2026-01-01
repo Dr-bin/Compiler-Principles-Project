@@ -1,0 +1,9 @@
+// 语义错误测试：使用未定义的变量
+var x;
+
+begin
+    x = 10;
+    y = x + 5;  // y未定义
+    z = y * 2;  // z未定义
+    write(unknown);  // unknown未定义
+end

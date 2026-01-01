@@ -1,0 +1,5 @@
+// 语法错误测试：空的begin-end块（应该允许，但测试边界情况）
+var x;
+
+begin
+end

@@ -1,0 +1,8 @@
+// 语法错误测试：write语句不完整
+var x;
+
+begin
+    write(x;
+    write;
+    write(;
+end

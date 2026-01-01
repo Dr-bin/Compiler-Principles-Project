@@ -182,12 +182,14 @@ class CompilerCLI:
             self.logger.info(f"  词法规则: {args.lexer_rules}")
             self.logger.info(f"  语法规则: {args.grammar_rules}")
 
-            lexer_rules, grammar_rules = load_rules_from_files(
+            lexer_rules, grammar_rules, metadata = load_rules_from_files(
                 args.lexer_rules, args.grammar_rules
             )
 
             self.logger.info(f"词法规则数量: {len(lexer_rules)}")
             self.logger.info(f"文法规则数量: {len(grammar_rules)}")
+            if metadata.get('require_explicit_declaration') is not None:
+                self.logger.info(f"语言特性: 需要显式变量声明 = {metadata['require_explicit_declaration']}")
 
             # 生成词法分析器代码
             self.logger.info("生成词法分析器代码...")
@@ -199,7 +201,7 @@ class CompilerCLI:
             # 提取开始符号（第一个非终结符）
             start_symbol = list(grammar_rules.keys())[0] if grammar_rules else None
             
-            parser_code = generate_parser_code(grammar_rules, start_symbol)
+            parser_code = generate_parser_code(grammar_rules, start_symbol, metadata=metadata)
 
             # 生成完整编译器代码
             self.logger.info("组合生成完整编译器...")
@@ -256,7 +258,7 @@ class CompilerCLI:
             self.logger.info(f"  语法规则: {args.grammar_rules}")
 
             # 加载规则
-            lexer_rules, grammar_rules = load_rules_from_files(
+            lexer_rules, grammar_rules, metadata = load_rules_from_files(
                 args.lexer_rules, args.grammar_rules
             )
 
@@ -292,7 +294,7 @@ class CompilerCLI:
             self.logger.info("执行语法制导翻译（解析+代码生成）...")
             # 需要从grammar_rules中确定起始符号
             start_symbol = list(grammar_rules.keys())[0] if grammar_rules else 'Program'
-            parser = create_parser_from_spec(grammar_rules, start_symbol)
+            parser = create_parser_from_spec(grammar_rules, start_symbol, metadata=metadata)
             try:
                 # [SDT关键] parse方法现在会在解析过程中同时生成中间代码
                 ast = parser.parse(tokens)
@@ -302,11 +304,15 @@ class CompilerCLI:
                 # [智能提示] 检查并显示语义错误（如未定义变量）
                 if parser.has_semantic_errors():
                     print("\n" + "=" * 60)
-                    print("[警告] 检测到语义问题（智能提示）")
+                    print("[错误] 检测到语义错误")
                     print("=" * 60)
                     for error in parser.get_semantic_errors():
                         print(error)
                     print("=" * 60 + "\n")
+                    
+                    # 语义错误应该阻止编译，返回错误码
+                    self.logger.error("编译失败：存在语义错误")
+                    return 1
                 
                 # [SDT] 从解析器中获取生成的中间代码
                 intermediate_code = parser.get_generated_code()

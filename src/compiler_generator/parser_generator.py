@@ -84,6 +84,7 @@ class ParserGenerator:
         # [智能提示] 变量检查相关属性
         self.enable_variable_check = True  # 是否启用变量检查
         self.semantic_errors: List[str] = []  # 收集语义错误
+        self.requires_explicit_declaration = False  # 是否需要显式声明（PL/0需要，Simple不需要）
 
     def _compute_first_sets(self):
         """[算法核心] 迭代计算所有符号的 FIRST 集合。"""
@@ -692,8 +693,16 @@ class ParserGenerator:
                     expr_val = children[2].synthesized_value
                     # [SDT] 立即生成赋值指令
                     if var_name:
-                        # 即使 expr_val 为 None，也要注册变量
-                        self.symbol_table[var_name] = {'type': 'var'}
+                        # [语义检查] 根据语言类型决定是否检查变量声明
+                        if var_name not in self.symbol_table:
+                            if self.requires_explicit_declaration:
+                                # PL/0模式：变量必须先声明，未声明则报错
+                                token = children[0].token if children[0].token else None
+                                self.check_variable_defined(var_name, token)
+                            # 无论是否报错，都添加到符号表（允许继续编译）
+                            # Simple模式：隐式声明，直接添加
+                            # PL/0模式：即使报错也添加，以便后续使用
+                            self.symbol_table[var_name] = {'type': 'var'}
                         if expr_val:
                             self.emit(f"{var_name} = {expr_val}")
         
@@ -756,8 +765,51 @@ class ParserGenerator:
         # ====================================================================
         # 4. 结构性节点（不生成代码，仅传递信息）
         # ====================================================================
-        elif symbol in ['Program', 'StmtList', 'Block', 'DeclList', 'VarDecl', 
-                        'IDList', 'DeclListTail', 'IDListTail', 'StmtListTail']:
+        elif symbol in ['Program', 'StmtList', 'Block', 'DeclList', 'StmtListTail']:
+            # 这些节点本身不生成代码，子节点已经生成了
+            pass
+        
+        # IDList -> 'ID' IDListTail (变量声明列表)
+        elif symbol == 'IDList' and children:
+            # 收集所有声明的变量并添加到符号表
+            # IDList -> 'ID' IDListTail
+            # IDListTail -> 'COMMA' 'ID' IDListTail | ε
+            def collect_ids_from_idlist_tail(tail_node):
+                """递归收集IDListTail中的所有变量名"""
+                var_names = []
+                if not tail_node or not tail_node.children:
+                    return var_names
+                
+                # IDListTail -> 'COMMA' 'ID' IDListTail
+                # children[0] = 'COMMA', children[1] = 'ID', children[2] = IDListTail
+                if len(tail_node.children) >= 2:
+                    # 处理ID
+                    id_node = tail_node.children[1]
+                    if id_node.name in ["'ID'", "ID"]:
+                        var_name = id_node.synthesized_value
+                        if var_name:
+                            var_names.append(var_name)
+                            self.symbol_table[var_name] = {'type': 'var'}
+                    
+                    # 递归处理剩余的IDListTail
+                    if len(tail_node.children) > 2:
+                        next_tail = tail_node.children[2]
+                        var_names.extend(collect_ids_from_idlist_tail(next_tail))
+                
+                return var_names
+            
+            # 处理IDList的第一个ID
+            if children[0].name in ["'ID'", "ID"]:
+                var_name = children[0].synthesized_value
+                if var_name:
+                    self.symbol_table[var_name] = {'type': 'var'}
+            
+            # 处理IDListTail中的所有ID
+            if len(children) > 1:
+                tail = children[1]
+                collect_ids_from_idlist_tail(tail)
+        
+        elif symbol in ['VarDecl', 'DeclListTail', 'IDListTail']:
             # 这些节点本身不生成代码，子节点已经生成了
             pass
     
@@ -906,17 +958,21 @@ class ParserGenerator:
         return self.grammar.copy()
 
 
-def create_parser_from_spec(grammar, start):
+def create_parser_from_spec(grammar, start, metadata: Dict = None):
     p = ParserGenerator()
     p.set_start_symbol(start)
     for k, v in grammar.items():
         for prod in v: p.add_production(k, prod)
+    # 设置元数据
+    if metadata:
+        p.requires_explicit_declaration = metadata.get('require_explicit_declaration', False)
     return p
 
 
 def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str, 
                         first_sets: Dict[str, Set[str]] = None, 
-                        follow_sets: Dict[str, Set[str]] = None) -> str:
+                        follow_sets: Dict[str, Set[str]] = None,
+                        metadata: Dict = None) -> str:
     """生成支持SDT的语法分析器Python代码
 
     [SDT版本] 生成的解析器在解析过程中同时生成中间代码
@@ -955,6 +1011,11 @@ def generate_parser_code(grammar: Dict[str, List[List[str]]], start_symbol: str,
         follow_list = sorted(list(follow_set))
         follow_sets_str += f"            '{nt}': {{" + ", ".join([repr(t) for t in follow_list]) + "},\n"
     follow_sets_str += "        }"
+    
+    # 从元数据中获取语言特性配置
+    require_explicit = False
+    if metadata:
+        require_explicit = metadata.get('require_explicit_declaration', False)
 
     parser_code = f'''
 # =============================================================================
@@ -1007,6 +1068,11 @@ class GeneratedParser:
         self.temp_counter = 0
         self.label_counter = 0
         self.symbol_table = {{}}
+        
+        # [语言特性] 变量声明要求（从语法规则元数据中读取）
+        self.requires_explicit_declaration = {require_explicit}
+        self.enable_variable_check = True
+        self.semantic_errors = []
     
     # [SDT] 代码生成辅助方法
     def new_temp(self):
@@ -1163,6 +1229,12 @@ class GeneratedParser:
         elif symbol == 'Factor' and len(children) == 1:
             if children[0].name in ["'NUM'", "'ID'", "NUM", "ID"]:
                 node.synthesized_value = children[0].synthesized_value
+                # [语义检查] 如果是ID，检查变量是否已定义
+                if children[0].name in ["'ID'", "ID"] and node.synthesized_value:
+                    var_name = node.synthesized_value
+                    if self.enable_variable_check:
+                        token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
+                        self.check_variable_defined(var_name, token)
         
         # Factor -> ( Expr )
         elif symbol == 'Factor' and len(children) == 3:
@@ -1181,8 +1253,17 @@ class GeneratedParser:
             if children[0].name == "'ID'":
                 var = children[0].synthesized_value
                 val = children[2].synthesized_value
-                if var and val:
-                    self.emit(f"{{var}} = {{val}}")
+                if var:
+                    # [语义检查] 根据语言类型决定是否检查变量声明
+                    if var not in self.symbol_table:
+                        if self.requires_explicit_declaration:
+                            # PL/0模式：变量必须先声明，未声明则报错
+                            token = children[0].token if hasattr(children[0], 'token') and children[0].token else None
+                            self.check_variable_defined(var, token)
+                        # 无论是否报错，都添加到符号表
+                        self.symbol_table[var] = {{'type': 'var'}}
+                    if var and val:
+                        self.emit(f"{{var}} = {{val}}")
         
         # WriteStmt
         elif symbol == 'WriteStmt' and len(children) >= 3:
@@ -1261,6 +1342,49 @@ class GeneratedParser:
                         return self._handle_mul_op(tail.children[0], temp)
                 return temp
         return left_val
+    
+    def check_variable_defined(self, var_name: str, token = None):
+        """检查变量是否已定义，如果未定义则记录错误并提供建议"""
+        if not self.enable_variable_check:
+            return True
+            
+        if var_name in self.symbol_table:
+            return True
+        
+        # 变量未定义，生成智能建议
+        line = token.line if token else 0
+        column = token.column if token else 0
+        
+        # 获取所有已定义的变量名
+        defined_vars = set(self.symbol_table.keys())
+        
+        # 简单的编辑距离建议（可以改进）
+        suggestion = None
+        if defined_vars:
+            # 简单的字符串相似度检查
+            for defined_var in defined_vars:
+                if len(var_name) == len(defined_var):
+                    diff = sum(1 for a, b in zip(var_name, defined_var) if a != b)
+                    if diff == 1:  # 只有一个字符不同
+                        suggestion = defined_var
+                        break
+        
+        error_msg = f"Semantic error at line {{line}}, column {{column}} - variable '{{var_name}}' is not defined"
+        if suggestion:
+            error_msg += f"\\n  [Suggestion] Did you mean '{{suggestion}}'?"
+        elif defined_vars:
+            error_msg += f"\\n  [Hint] Defined variables: {{', '.join(sorted(defined_vars))}}"
+        
+        self.semantic_errors.append(error_msg)
+        return False
+    
+    def get_semantic_errors(self):
+        """获取所有语义错误"""
+        return self.semantic_errors.copy()
+    
+    def has_semantic_errors(self):
+        """检查是否有语义错误"""
+        return len(self.semantic_errors) > 0
     
     def parse(self, tokens: List):
         """解析tokens [SDT: 同时生成代码]"""

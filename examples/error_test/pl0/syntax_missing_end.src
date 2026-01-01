@@ -1,0 +1,7 @@
+// 语法错误测试：缺少end关键字
+var x, y;
+
+begin
+    x = 10;
+    y = 20;
+    write(x);

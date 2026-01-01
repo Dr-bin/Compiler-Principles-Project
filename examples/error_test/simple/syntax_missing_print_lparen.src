@@ -1,0 +1,4 @@
+// Simple语法错误测试：print语句缺少左括号
+x = 10;
+print x);
+print;

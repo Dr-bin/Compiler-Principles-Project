@@ -2,6 +2,9 @@
 # 参考：Niklaus Wirth的PL/0标准语法定义
 # 注意：if语句保持当前形式 if (condition) statement，其他按标准PL/0
 
+# @REQUIRE_EXPLICIT_DECLARATION: true
+# 语言特性：PL/0要求变量必须先声明（使用var关键字）才能使用
+
 # 程序结构：程序由一个块组成（标准PL/0以句点结尾，这里简化）
 Program -> Block
 

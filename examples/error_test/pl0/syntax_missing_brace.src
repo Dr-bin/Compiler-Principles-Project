@@ -1,0 +1,10 @@
+// 语法错误测试：缺少大括号
+var i;
+
+begin
+    i = 0;
+    while (i < 5)
+        write(i);
+        i = i + 1;
+    }
+end

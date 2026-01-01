@@ -1,0 +1,5 @@
+// Simple语法错误测试：print语句不完整
+x = 10;
+print(x;
+print;
+print(;

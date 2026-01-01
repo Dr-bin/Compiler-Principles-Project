@@ -1,0 +1,11 @@
+// 语法错误测试：if语句不完整
+var x;
+
+begin
+    if (x < 10
+        x = 5;
+    if x < 10)
+        x = 5;
+    if (x < 10
+        x = 5
+end

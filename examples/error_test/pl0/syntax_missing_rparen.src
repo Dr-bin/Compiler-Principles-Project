@@ -1,0 +1,8 @@
+// 语法错误测试：缺少右括号
+var x;
+
+begin
+    if (x < 10
+        x = 5;
+    write(x + 5;
+end

@@ -1,6 +1,9 @@
 # 简单表达式语言的语法规则
 # 格式: NonTerminal -> production1 | production2
 
+# @REQUIRE_EXPLICIT_DECLARATION: false
+# 语言特性：Simple语言允许隐式声明，变量在赋值时自动声明
+
 # 程序：由语句组成
 Program -> StmtList
 
