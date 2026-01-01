@@ -1,4 +1,4 @@
-# PL/0标准语法规则 (原始形式，包含左公因子和左递归)
+# PL/0标准语法规则 (原始形式，包含左公因子和左递归，由系统自动消除)
 # 参考：Niklaus Wirth的PL/0标准语法定义
 # 注意：if语句保持当前形式 if (condition) statement，其他按标准PL/0
 
@@ -25,9 +25,8 @@ BlockRest -> 'VAR' IDList 'SEMI' ProcDeclList Stmt | ProcDeclList Stmt
 # 标准PL/0形式
 ConstDecl -> 'CONST' ConstList 'SEMI' | 
 
-# 常量列表：包含左公因子（ConstItem是公共前缀）
-ConstList -> ConstItem ConstListTail
-ConstListTail -> 'COMMA' ConstItem ConstListTail | 
+# 常量列表：包含左公因子（ConstItem是公共前缀，由系统自动消除）
+ConstList -> ConstItem | ConstItem 'COMMA' ConstList
 
 # 常量项：ident = number
 ConstItem -> 'ID' 'ASSIGN' 'NUM'
@@ -37,9 +36,8 @@ ConstItem -> 'ID' 'ASSIGN' 'NUM'
 VarDecl -> 'VAR' IDList 'SEMI' | 
 VarDeclOpt -> 'VAR' IDList 'SEMI' | 
 
-# 标识符列表：包含左公因子（'ID'是公共前缀）
-IDList -> 'ID' IDListTail
-IDListTail -> 'COMMA' 'ID' IDListTail | 
+# 标识符列表：包含左公因子（'ID'是公共前缀，由系统自动消除）
+IDList -> 'ID' | 'ID' 'COMMA' IDList
 
 # 过程声明列表：{ procedure ident ; block ; }
 # 标准PL/0形式，可以出现0次或多次
