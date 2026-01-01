@@ -98,6 +98,8 @@ class ParserGenerator:
         self.operator_tokens: Set[str] = set()  # 操作符token类型（如PLUS、MINUS等）
         self.keyword_tokens: Set[str] = set()  # 关键字token类型（如IF、WHILE等）
         self.punctuation_tokens: Set[str] = set()  # 标点符号token类型（如LPAREN、SEMI等）
+        self.left_paren_tokens: Set[str] = set()  # 左括号token类型（如LPAREN、LBRACE等）
+        self.right_paren_tokens: Set[str] = set()  # 右括号token类型（如RPAREN、RBRACE等）
         
         # 从词法规则中提取token分类
         if lexer_rules:
@@ -132,8 +134,14 @@ class ParserGenerator:
             
             # 识别括号和标点符号
             elif pattern in ['(', ')', r'\(', r'\)', '{', '}', r'\{', r'\}', '[', ']', r'\[', r'\]', 
-                            ';', ',', ':', '.', r'\;', r'\,', r'\:','\.']:
+                            ';', ',', ':', '.', r'\;', r'\,', r'\:', '\.']:
                 self.punctuation_tokens.add(token_type)
+                # 识别左括号
+                if pattern in ['(', r'\(', '{', r'\{', '[', r'\[']:
+                    self.left_paren_tokens.add(token_type)
+                # 识别右括号
+                elif pattern in [')', r'\)', '}', r'\}', ']', r'\]']:
+                    self.right_paren_tokens.add(token_type)
             
             # 识别操作符（算术、比较、逻辑等）
             elif pattern in ['+', '-', '*', '/', '%', r'\+', r'-', r'\*', r'\/', r'\%',
@@ -736,6 +744,20 @@ class ParserGenerator:
         token_type = prod_symbol[1:-1]
         return token_type in self.punctuation_tokens
     
+    def _is_left_paren_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是左括号token（消除硬编码）"""
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.left_paren_tokens
+    
+    def _is_right_paren_token_in_production(self, prod_symbol: str) -> bool:
+        """判断产生式中的符号是否是右括号token（消除硬编码）"""
+        if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
+            return False
+        token_type = prod_symbol[1:-1]
+        return token_type in self.right_paren_tokens
+    
     def _is_operator_token_in_production(self, prod_symbol: str) -> bool:
         """判断产生式中的符号是否是操作符token（消除硬编码）"""
         if not prod_symbol.startswith("'") or not prod_symbol.endswith("'"):
@@ -879,8 +901,12 @@ class ParserGenerator:
         elif len(production) == 1:
             node.synthesized_value = children[0].synthesized_value
         
-        # 括号表达式：'LPAREN' Expr 'RPAREN'
-        elif len(production) == 3 and production[0] == "'LPAREN'" and production[2] == "'RPAREN'":
+        # 括号表达式：left_paren Expr right_paren（消除硬编码）
+        # 模式：第一个是左括号token，第二个是非终结符，第三个是右括号token
+        elif (len(production) == 3 and 
+              self._is_left_paren_token_in_production(production[0]) and 
+              not production[1].startswith("'") and 
+              self._is_right_paren_token_in_production(production[2])):
             node.synthesized_value = children[1].synthesized_value
         
         # ====================================================================
@@ -1349,6 +1375,8 @@ class GeneratedParser:
         self.operator_tokens = set()
         self.keyword_tokens = set()
         self.punctuation_tokens = set()
+        self.left_paren_tokens = set()  # 左括号token类型
+        self.right_paren_tokens = set()  # 右括号token类型
         
         # 从词法规则中提取token分类
         if self.lexer_rules:
@@ -1374,9 +1402,15 @@ class GeneratedParser:
             # 识别关键字token
             elif re.match(r'^[a-zA-Z]+$', pattern):
                 self.keyword_tokens.add(token_type)
-            # 识别标点符号
+            # 识别标点符号和括号
             elif pattern in ['(', ')', '{{', '}}', '[', ']', ';', ',', ':', '.']:
                 self.punctuation_tokens.add(token_type)
+                # 识别左括号
+                if pattern in ['(', '{{', '[']:
+                    self.left_paren_tokens.add(token_type)
+                # 识别右括号
+                elif pattern in [')', '}}', ']']:
+                    self.right_paren_tokens.add(token_type)
             # 识别操作符
             elif pattern in ['+', '-', '*', '/', '%', '=', '==', '!=', '<', '>', '<=', '>=', '&', '|', '!', '&&', '||']:
                 self.operator_tokens.add(token_type)
@@ -1428,6 +1462,14 @@ class GeneratedParser:
     def _is_punctuation_token(self, token_type: str) -> bool:
         """判断token类型是否是标点（消除硬编码）"""
         return token_type in self.punctuation_tokens
+    
+    def _is_left_paren_token(self, token_type: str) -> bool:
+        """判断token类型是否是左括号（消除硬编码）"""
+        return token_type in self.left_paren_tokens
+    
+    def _is_right_paren_token(self, token_type: str) -> bool:
+        """判断token类型是否是右括号（消除硬编码）"""
+        return token_type in self.right_paren_tokens
     
     def current_token(self):
         if self.pos < len(self.tokens):
@@ -1691,8 +1733,12 @@ class GeneratedParser:
         elif len(production) == 1:
             node.synthesized_value = children[0].synthesized_value
         
-        # 括号表达式：'LPAREN' Expr 'RPAREN'
-        elif len(production) == 3 and production[0] == "'LPAREN'" and production[2] == "'RPAREN'":
+        # 括号表达式：left_paren Expr right_paren（消除硬编码）
+        # 模式：第一个是左括号token，第二个是非终结符，第三个是右括号token
+        elif (len(production) == 3 and 
+              production[0].startswith("'") and production[0][1:-1] in self.left_paren_tokens and
+              not production[1].startswith("'") and
+              production[2].startswith("'") and production[2][1:-1] in self.right_paren_tokens):
             node.synthesized_value = children[1].synthesized_value
         
         # 赋值语句：identifier_token operator_token Expr ...（消除硬编码）
